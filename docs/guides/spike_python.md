@@ -181,3 +181,13 @@ The **📜 Mission** dropdown also includes a **🧭 Gyro Control Templates** gr
 | **PID Control Gyro Straight** | `steering = error*kp + integral*ki + derivative*kd`, with an integral windup cap | `speed`, `degrees`, `kp`, `ki`, `kd`, `integral_cap` |
 
 The straight-drive templates reset the wheel encoders with `Motor.set_degrees_counted(0)` and measure distance as `(abs(motor_a.get_degrees_counted()) + abs(motor_b.get_degrees_counted())) / 2`.
+
+### Realistic physics
+
+**🤖 Robot Design → Section C: Physics Realism** is on by default:
+
+* **Momentum**: motors speed up and brake gradually, so a robot that stops at speed keeps turning a few degrees. Basic Gyro Turn ends past its early stop point, and the faster the turn, the further it goes.
+* **Drift**: nothing holds the robot straight behind the scenes. A slightly smaller right tire (0.5%) and a slightly weaker right motor (1.5%) make an uncorrected straight drive curve to the right. P Control Gyro Straight removes most of the drift. With a large mismatch, P alone leaves a small constant heading error, and the integral term in PID removes it.
+* **Encoders** count real wheel rotation, including coasting after a stop.
+
+Turn the toggle off for an ideal robot that stops dead and drives perfectly straight.

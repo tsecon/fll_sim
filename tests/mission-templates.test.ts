@@ -7,6 +7,7 @@ import { SimulationPhysicsEngine } from '../src/physics/engine';
 import { VirtualSensorManager } from '../src/sensors/sensor-manager';
 import { VirtualSpikeApi } from '../src/runtime/spike-api';
 import { PythonScriptRunner } from '../src/runtime/python-runner';
+import { DEFAULT_REALISTIC_PHYSICS, PhysicsRealismSettings } from '../src/physics/robot-body';
 
 const clone = (blocks: VisualBlock[]): VisualBlock[] => JSON.parse(JSON.stringify(blocks));
 
@@ -22,8 +23,8 @@ function leaves(blocks: VisualBlock[], out: VisualBlock[] = []): VisualBlock[] {
   return out;
 }
 
-async function runTemplate(code: string) {
-  const engine = new SimulationPhysicsEngine();
+async function runTemplate(code: string, realism?: PhysicsRealismSettings) {
+  const engine = new SimulationPhysicsEngine({ realism });
   await engine.init();
   const sensors = new VirtualSensorManager(engine.robot);
   const api = new VirtualSpikeApi(engine, sensors);
@@ -94,4 +95,39 @@ describe('Gyro control mission templates', () => {
     expect(Math.abs(yaw)).toBeLessThanOrEqual(3);
   }, 30000);
 
+  describe('with realistic physics', () => {
+    const OPEN_LOOP = `from spike import PrimeHub, MotorPair
+from spike.control import wait_for_seconds
+
+hub = PrimeHub()
+motors = MotorPair('A', 'B')
+hub.motion_sensor.reset_yaw_angle()
+motors.start(0, 40)
+wait_for_seconds(2.5)
+motors.stop()
+`;
+
+    it('Basic Gyro Turn overshoots past its early stop point, more at higher speed', async () => {
+      const code = MISSION_TEMPLATES.tpl_basic_gyro_turn.code;
+      const slow = await runTemplate(code, DEFAULT_REALISTIC_PHYSICS);
+      const fast = await runTemplate(code.replace('turn_speed = 30', 'turn_speed = 60'), DEFAULT_REALISTIC_PHYSICS);
+      expect(slow.yaw).toBeGreaterThan(87);
+      expect(fast.yaw).toBeGreaterThan(slow.yaw + 3);
+    }, 30000);
+
+    it('P Control Gyro Turn still lands within tolerance', async () => {
+      const { yaw } = await runTemplate(MISSION_TEMPLATES.tpl_p_gyro_turn.code, DEFAULT_REALISTIC_PHYSICS);
+      expect(Math.abs(yaw - 90)).toBeLessThanOrEqual(3);
+    }, 20000);
+
+    it('P straight cuts open-loop drift, and PID removes the steady-state error P leaves behind', async () => {
+      const realism = { enabled: true, wheelMismatchPct: 1.5, motorMismatchPct: 3 };
+      const open = await runTemplate(OPEN_LOOP, realism);
+      const p = await runTemplate(MISSION_TEMPLATES.tpl_p_gyro_straight.code, realism);
+      const pid = await runTemplate(MISSION_TEMPLATES.tpl_pid_gyro_straight.code, realism);
+      expect(Math.abs(open.yaw)).toBeGreaterThan(Math.abs(p.yaw) * 2);
+      expect(Math.abs(p.yaw)).toBeGreaterThan(1.5);
+      expect(Math.abs(pid.yaw)).toBeLessThan(1);
+    }, 40000);
+  });
 });

@@ -18,6 +18,9 @@ export class VirtualMotor {
   public maxSpeedDegPerSec: number = 1000; // ~166 RPM
   public maxTorqueNm: number = 0.25;
 
+  /** Encoder follows the measured wheel spin (including coast-down) instead of the commanded speed */
+  public countActualRotation = false;
+
   private activeTarget: MotorTarget | null = null;
   private stopAction: StopAction = 'BRAKE';
 
@@ -125,9 +128,11 @@ export class VirtualMotor {
    * Physics step update (dt in seconds)
    */
   public step(dt: number, actualAngularVelocityRadPerSec?: number): number {
+    const measured = actualAngularVelocityRadPerSec !== undefined && this.countActualRotation;
     if (actualAngularVelocityRadPerSec !== undefined) {
       // Convert rad/s to deg/s
       this.velocityDegPerSec = (actualAngularVelocityRadPerSec * 180) / Math.PI;
+      if (measured) this.degrees += this.velocityDegPerSec * dt;
     } else if (this.activeTarget) {
       this.velocityDegPerSec = this.activeTarget.targetSpeedDegPerSec;
     }
@@ -149,7 +154,7 @@ export class VirtualMotor {
 
     // Simulate movement
     const stepDeltaDeg = Math.abs(targetSpeedDegPerSec * dt);
-    this.degrees += targetSpeedDegPerSec * dt;
+    if (!measured) this.degrees += targetSpeedDegPerSec * dt;
 
     if (type === 'DEGREES' && this.activeTarget.remainingDegrees !== undefined) {
       this.activeTarget.remainingDegrees -= stepDeltaDeg;

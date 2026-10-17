@@ -21,6 +21,27 @@ export interface SpawnPose {
   yawDegrees: number;
 }
 
+/**
+ * Real-robot imperfections. With `enabled` off the drivebase is ideal: wheels and chassis
+ * stop dead on brake and a hidden gyro heading lock keeps straight drives perfectly straight.
+ */
+export interface PhysicsRealismSettings {
+  /** Motor acceleration/brake ramps let the chassis carry momentum; removes the heading lock */
+  enabled: boolean;
+  /** Right tire smaller than the left by this percent (worn tire); negative = left smaller */
+  wheelMismatchPct: number;
+  /** Right motor reaches this percent less of its commanded speed; negative = left weaker */
+  motorMismatchPct: number;
+}
+
+export const IDEAL_PHYSICS: PhysicsRealismSettings = { enabled: false, wheelMismatchPct: 0, motorMismatchPct: 0 };
+export const DEFAULT_REALISTIC_PHYSICS: PhysicsRealismSettings = { enabled: true, wheelMismatchPct: 0.5, motorMismatchPct: 1.5 };
+
+// SPIKE large motor ramps (rad/s²): ~0.12 s to full speed, slightly slower passive brake
+const MOTOR_ACCEL_RAD_PER_S2 = 140;
+const MOTOR_BRAKE_RAD_PER_S2 = 100;
+const TIRE_BORDER_RADIUS = 0.003;
+
 export class RobotPhysicsBody {
   public world: RAPIER.World;
   public spec: RobotAssemblySpec;
@@ -38,6 +59,10 @@ export class RobotPhysicsBody {
   public driveRightPort: MotorPort = 'B';
   public leftWheelClusterId: string | null = null;
   public rightWheelClusterId: string | null = null;
+
+  public realism: PhysicsRealismSettings = { ...IDEAL_PHYSICS };
+  /** Realistic mode: wheel speed each drive motor is actually commanding after ramping */
+  private rampedRadPerSec: Map<MotorPort, number> = new Map();
 
   constructor(world: RAPIER.World, spec: RobotAssemblySpec, spawnPose: SpawnPose) {
     this.world = world;
@@ -125,20 +150,7 @@ export class RobotPhysicsBody {
           .setAngularDamping(0.5);
 
         const wheelBody = this.world.createRigidBody(wheelDesc);
-        // Use roundCylinder with 3mm rounded tire edge radius (total radius 28mm, width 26mm).
-        // This models the rounded rubber tire crown and eliminates sharp cylinder edge singularities
-        // that cause normal-flipping contact impulses on flat surfaces.
-        const wheelColliderDesc = RAPIER.ColliderDesc.roundCylinder(
-          0.010, // halfHeight core
-          0.025, // radius core
-          0.003  // borderRadius: 0.025 + 0.003 = 0.028m radius (56mm diameter)
-        )
-          .setRotation({ x: 0, y: 0, z: 0.7071, w: 0.7071 }) // Cylinder axis along X
-          .setFriction(0.9) // High rubber traction
-          .setRestitution(0.0) // Completely inelastic
-          .setMass(cluster.totalMassKg || 0.04);
-
-        this.world.createCollider(wheelColliderDesc, wheelBody);
+        this.createTireCollider(wheelBody, cluster.totalMassKg || 0.04, this.wheelRadius);
         this.wheelBodies.set(cluster.clusterId, wheelBody);
 
         // Revolute joint connecting wheel to chassis (mechanical axle constraint)
@@ -177,6 +189,46 @@ export class RobotPhysicsBody {
       if (!this.motors.has(p)) {
         this.motors.set(p, new VirtualMotor(p));
       }
+    }
+  }
+
+  private createTireCollider(wheelBody: RAPIER.RigidBody, massKg: number, radius: number): void {
+    // Use roundCylinder with 3mm rounded tire edge radius (total radius 28mm, width 26mm).
+    // This models the rounded rubber tire crown and eliminates sharp cylinder edge singularities
+    // that cause normal-flipping contact impulses on flat surfaces.
+    const wheelColliderDesc = RAPIER.ColliderDesc.roundCylinder(
+      0.010, // halfHeight core
+      radius - TIRE_BORDER_RADIUS, // radius core
+      TIRE_BORDER_RADIUS
+    )
+      .setRotation({ x: 0, y: 0, z: 0.7071, w: 0.7071 }) // Cylinder axis along X
+      .setFriction(0.9) // High rubber traction
+      .setRestitution(0.0) // Completely inelastic
+      .setMass(massKg);
+
+    this.world.createCollider(wheelColliderDesc, wheelBody);
+  }
+
+  /**
+   * Applies realism settings; rebuilds tire colliders so a wheel mismatch takes effect immediately.
+   * The mismatch is split across both tires so the average diameter (and cm distances) stay 56 mm.
+   */
+  public setRealism(settings: PhysicsRealismSettings): void {
+    this.realism = { ...settings };
+    this.rampedRadPerSec.clear();
+    for (const motor of this.motors.values()) {
+      motor.countActualRotation = settings.enabled;
+    }
+
+    const mismatch = settings.enabled ? settings.wheelMismatchPct / 100 : 0;
+    for (const [clusterId, wheelBody] of this.wheelBodies.entries()) {
+      const scale = clusterId === this.rightWheelClusterId ? 1 - mismatch / 2 : 1 + mismatch / 2;
+      const massKg = this.spec.clusters.find((c) => c.clusterId === clusterId)?.totalMassKg || 0.04;
+      while (wheelBody.numColliders() > 0) {
+        this.world.removeCollider(wheelBody.collider(0), false);
+      }
+      this.createTireCollider(wheelBody, massKg, this.wheelRadius * scale);
+      wheelBody.wakeUp();
     }
   }
 
@@ -261,6 +313,11 @@ export class RobotPhysicsBody {
    */
   public brakeChassisAndWheels(): void {
     this.straightTargetYaw = null;
+    if (this.realism.enabled) {
+      // Motors ramp down in updateMotors(); the chassis keeps its momentum and the tires stop it
+      this.onBrakeEngaged?.();
+      return;
+    }
     for (const wb of this.wheelBodies.values()) {
       wb.resetForces(true);
       wb.resetTorques(true);
@@ -315,7 +372,7 @@ export class RobotPhysicsBody {
       Math.abs(spdL) >= 1.0 && Math.abs(spdR) >= 1.0 && Math.abs(spdL - spdR) < 1.0;
 
     let yawError = 0;
-    if (isDrivingStraight) {
+    if (isDrivingStraight && !this.realism.enabled) {
       const curYaw = this.getYawDegrees();
       if (this.straightTargetYaw === null) {
         this.straightTargetYaw = curYaw;
@@ -345,8 +402,24 @@ export class RobotPhysicsBody {
 
       // Drive wheels
       const targetDegPerSec = motor.targetSpeedDegPerSec;
-      const isIdle = Math.abs(targetDegPerSec) < 1.0;
+      let isIdle = Math.abs(targetDegPerSec) < 1.0;
       let targetRadPerSec = (targetDegPerSec * Math.PI) / 180;
+
+      if (this.realism.enabled) {
+        const weakSide = this.realism.motorMismatchPct >= 0 ? isDriveRight : isDriveLeft;
+        if (weakSide) targetRadPerSec *= 1 - Math.abs(this.realism.motorMismatchPct) / 100;
+
+        const ramped = this.rampedRadPerSec.get(port) ?? 0;
+        const speedingUp = Math.abs(targetRadPerSec) > Math.abs(ramped) && targetRadPerSec * ramped >= 0;
+        const maxDelta = (speedingUp ? MOTOR_ACCEL_RAD_PER_S2 : MOTOR_BRAKE_RAD_PER_S2) * dt;
+        const next = ramped + Math.max(-maxDelta, Math.min(maxDelta, targetRadPerSec - ramped));
+        this.rampedRadPerSec.set(port, next);
+        targetRadPerSec = next;
+        // The motor brake is the speed governor driving the wheel to 0 with limited torque;
+        // hard-locking the axle would fight the joint while the chassis is still moving
+        isIdle = false;
+        if (Math.abs(next) >= 0.02) anyDriveActive = true;
+      }
 
       // Differential wheel speed trim to keep wheels in lockstep
       if (isDrivingStraight && !isIdle) {
@@ -384,8 +457,10 @@ export class RobotPhysicsBody {
             // Electromagnetic holding brake: locks wheel axle and prevents creeping
             wb.setAngularDamping(50.0);
             wb.setAngvel({ x: 0, y: 0, z: 0 }, true);
-            const curWLin = wb.linvel();
-            wb.setLinvel({ x: 0, y: curWLin.y, z: 0 }, true);
+            if (!this.realism.enabled) {
+              const curWLin = wb.linvel();
+              wb.setLinvel({ x: 0, y: curWLin.y, z: 0 }, true);
+            }
             if (joint) {
               try {
                 (joint as any).configureMotorVelocity(0.0, 5.0);
@@ -393,7 +468,7 @@ export class RobotPhysicsBody {
             }
             motor.step(dt, 0);
           } else {
-            anyDriveActive = true;
+            if (!this.realism.enabled) anyDriveActive = true;
             if (joint) {
               try {
                 (joint as any).configureMotorVelocity(0.0, 0.0);
@@ -428,7 +503,22 @@ export class RobotPhysicsBody {
       }
     }
 
-    if (!anyDriveActive) {
+    if (!anyDriveActive && this.realism.enabled) {
+      // Wheels are locked by the motor brake; the chassis slides to rest on tire friction.
+      // Only clear the last residual creep once it is nearly still.
+      this.chassisBody.setLinearDamping(0.5);
+      this.chassisBody.setAngularDamping(2.0);
+      const cv = this.chassisBody.linvel();
+      const av = this.chassisBody.angvel();
+      if (Math.hypot(cv.x, cv.z) < 0.005 && Math.abs(av.y) < 0.02) {
+        this.chassisBody.setLinvel({ x: 0, y: cv.y, z: 0 }, true);
+        this.chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        for (const wb of this.wheelBodies.values()) {
+          wb.setLinvel({ x: 0, y: wb.linvel().y, z: 0 }, true);
+          wb.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        }
+      }
+    } else if (!anyDriveActive) {
       // Both drive motors idle: apply holding brake to chassis and wheels to eliminate residual coasting
       this.chassisBody.resetForces(true);
       this.chassisBody.resetTorques(true);
@@ -480,6 +570,7 @@ export class RobotPhysicsBody {
 
   public reset(pose: SpawnPose): void {
     this.straightTargetYaw = null;
+    this.rampedRadPerSec.clear();
     const yawRad = (pose.yawDegrees * Math.PI) / 180;
     const halfYaw = yawRad / 2;
     const qy = Math.sin(halfYaw);

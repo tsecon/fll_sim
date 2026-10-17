@@ -3,6 +3,7 @@ import { CameraViewPreset } from '../view/viewport';
 import { SimulatorAppMode } from '../missions/mission-manager';
 import { MatMapType } from '../view/mat-texture';
 import { MotorPort } from '../physics/motor-controller';
+import { PhysicsRealismSettings, DEFAULT_REALISTIC_PHYSICS } from '../physics/robot-body';
 
 import { SeasonMissionSpec } from '../missions/season-config';
 import { legoAssetManager, LegoRenderMode } from '../cad/lego-asset-manager';
@@ -141,6 +142,7 @@ export interface HudCallbacks {
   onResetGyro?: () => void;
   onRobotPresetChange?: (preset: 'advanced' | 'compact') => void;
   onPortMappingChange?: (mappings: RobotPortMapping) => void;
+  onPhysicsRealismChange?: (settings: PhysicsRealismSettings) => void;
 }
 
 export const SAMPLE_MISSIONS: Record<string, { title: string; code: string; visualBlocks?: VisualBlock[] }> = {
@@ -940,6 +942,8 @@ export class SimulatorHud {
   private portMappings: RobotPortMapping = { ...DEFAULT_PORT_MAPPING };
   private readonly PORT_STORAGE_KEY = 'fll_robot_port_mappings';
   private readonly ROBOT_PRESET_STORAGE_KEY = 'fll_robot_active_preset';
+  private readonly PHYSICS_STORAGE_KEY = 'fll_physics_realism';
+  private physicsRealism: PhysicsRealismSettings = { ...DEFAULT_REALISTIC_PHYSICS };
 
   // Spawn pose configuration elements
   private spawnInputX!: HTMLInputElement;
@@ -1010,6 +1014,7 @@ export class SimulatorHud {
     this.callbacks = callbacks;
     this.loadScriptTabsFromStorage();
     this.loadPortMappingsFromStorage();
+    this.loadPhysicsRealismFromStorage();
     this.rootElement = document.createElement('div');
     this.rootElement.className = 'fll-hud-root';
     container.appendChild(this.rootElement);
@@ -2235,6 +2240,51 @@ export class SimulatorHud {
                 </div>
               </div>
             </div>
+
+            <!-- SECTION C: Physics Realism -->
+            <div class="design-section design-section-physics">
+              <div class="section-title-row">
+                <span class="section-badge">SECTION C</span>
+                <span class="section-title">Physics Realism</span>
+                <span class="section-hint">Momentum after stopping &amp; built-in heading drift</span>
+              </div>
+              <label class="physics-toggle-row">
+                <input type="checkbox" id="chk-physics-realism">
+                <span><strong>Realistic physics</strong>: motors ramp up and brake gradually, so the robot keeps turning a few degrees after it stops, and nothing secretly holds it straight. Turn off for an ideal robot.</span>
+              </label>
+              <div class="port-mapping-grid">
+                <div class="port-item-card">
+                  <div class="port-item-header">
+                    <span class="port-item-icon">🛞</span>
+                    <div class="port-item-info">
+                      <div class="port-item-name">Tire Mismatch</div>
+                      <div class="port-item-role">Worn tire: the robot curves even when both wheels turn equally</div>
+                    </div>
+                  </div>
+                  <div class="port-item-select-row">
+                    <label for="input-physics-wheel-mismatch">Right tire smaller by (%):</label>
+                    <input type="number" class="hud-select hud-select-xs physics-input" id="input-physics-wheel-mismatch" min="-5" max="5" step="0.1">
+                  </div>
+                </div>
+                <div class="port-item-card">
+                  <div class="port-item-header">
+                    <span class="port-item-icon">⚙️</span>
+                    <div class="port-item-info">
+                      <div class="port-item-name">Motor Mismatch</div>
+                      <div class="port-item-role">One motor reaches slightly less than its commanded speed</div>
+                    </div>
+                  </div>
+                  <div class="port-item-select-row">
+                    <label for="input-physics-motor-mismatch">Right motor weaker by (%):</label>
+                    <input type="number" class="hud-select hud-select-xs physics-input" id="input-physics-motor-mismatch" min="-5" max="5" step="0.1">
+                  </div>
+                </div>
+              </div>
+              <div class="physics-actions">
+                <span class="section-hint">Negative values put the mismatch on the left side.</span>
+                <button class="btn btn-xs btn-outline" id="btn-physics-defaults">↺ Reset to defaults</button>
+              </div>
+            </div>
           </div>
 
           <div class="robot-design-modal-footer">
@@ -3199,6 +3249,29 @@ export class SimulatorHud {
         }
       });
     });
+
+    // Physics realism controls
+    const chkRealism = this.rootElement.querySelector('#chk-physics-realism') as HTMLInputElement | null;
+    const inputWheel = this.rootElement.querySelector('#input-physics-wheel-mismatch') as HTMLInputElement | null;
+    const inputMotor = this.rootElement.querySelector('#input-physics-motor-mismatch') as HTMLInputElement | null;
+    const readPct = (input: HTMLInputElement | null, fallback: number) => {
+      const v = parseFloat(input?.value ?? '');
+      return Number.isFinite(v) ? Math.max(-5, Math.min(5, v)) : fallback;
+    };
+    const onPhysicsInput = () => {
+      this.setPhysicsRealism({
+        enabled: chkRealism?.checked ?? this.physicsRealism.enabled,
+        wheelMismatchPct: readPct(inputWheel, this.physicsRealism.wheelMismatchPct),
+        motorMismatchPct: readPct(inputMotor, this.physicsRealism.motorMismatchPct),
+      });
+    };
+    chkRealism?.addEventListener('change', onPhysicsInput);
+    inputWheel?.addEventListener('change', onPhysicsInput);
+    inputMotor?.addEventListener('change', onPhysicsInput);
+    this.rootElement.querySelector('#btn-physics-defaults')?.addEventListener('click', () => {
+      this.setPhysicsRealism({ ...DEFAULT_REALISTIC_PHYSICS });
+    });
+    this.syncPhysicsRealismUI();
 
     // Save Port Mapping button
     const btnSavePortMapping = this.rootElement.querySelector('#btn-save-port-mapping');
@@ -4580,6 +4653,54 @@ ${snap.recommendations.map((r) => `- ${r}`).join('\n')}
       }
     } catch (e) {
       console.warn('Could not load port mappings from storage:', e);
+    }
+  }
+
+  public getPhysicsRealism(): PhysicsRealismSettings {
+    return { ...this.physicsRealism };
+  }
+
+  public setPhysicsRealism(settings: PhysicsRealismSettings): void {
+    this.physicsRealism = { ...settings };
+    try {
+      localStorage.setItem(this.PHYSICS_STORAGE_KEY, JSON.stringify(this.physicsRealism));
+    } catch (e) {
+      console.warn('Could not save physics realism settings to localStorage:', e);
+    }
+    this.syncPhysicsRealismUI();
+    const { enabled, wheelMismatchPct, motorMismatchPct } = this.physicsRealism;
+    this.logConsole(
+      enabled
+        ? `🛞 Realistic physics ON (tire mismatch ${wheelMismatchPct}%, motor mismatch ${motorMismatchPct}%)`
+        : '🛞 Realistic physics OFF (ideal robot)'
+    );
+    this.callbacks.onPhysicsRealismChange?.(this.getPhysicsRealism());
+  }
+
+  private loadPhysicsRealismFromStorage(): void {
+    try {
+      const raw = localStorage.getItem(this.PHYSICS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object') {
+        this.physicsRealism = { ...DEFAULT_REALISTIC_PHYSICS, ...parsed };
+      }
+    } catch (e) {
+      console.warn('Could not load physics realism settings from storage:', e);
+    }
+  }
+
+  private syncPhysicsRealismUI(): void {
+    const chk = this.rootElement?.querySelector?.('#chk-physics-realism') as HTMLInputElement | null;
+    const wheel = this.rootElement?.querySelector?.('#input-physics-wheel-mismatch') as HTMLInputElement | null;
+    const motor = this.rootElement?.querySelector?.('#input-physics-motor-mismatch') as HTMLInputElement | null;
+    if (chk) chk.checked = this.physicsRealism.enabled;
+    if (wheel) {
+      wheel.value = String(this.physicsRealism.wheelMismatchPct);
+      wheel.disabled = !this.physicsRealism.enabled;
+    }
+    if (motor) {
+      motor.value = String(this.physicsRealism.motorMismatchPct);
+      motor.disabled = !this.physicsRealism.enabled;
     }
   }
 

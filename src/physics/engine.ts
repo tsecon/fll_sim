@@ -1,12 +1,13 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { FllArenaPhysics } from './arena';
-import { RobotPhysicsBody, SpawnPose } from './robot-body';
+import { RobotPhysicsBody, SpawnPose, PhysicsRealismSettings } from './robot-body';
 import { RobotAssemblySpec } from '../cad/types';
 import { getFllAdvanceDrivingBaseSpec } from '../cad/models/advance-driving-base';
 
 export interface PhysicsEngineOptions {
   fixedTimestepSeconds?: number; // Default 1/60 (60Hz)
   substeps?: number;
+  realism?: PhysicsRealismSettings; // Default: ideal physics
 }
 
 export class SimulationPhysicsEngine {
@@ -16,6 +17,7 @@ export class SimulationPhysicsEngine {
   public isInitialized = false;
 
   private fixedDt: number;
+  private realism?: PhysicsRealismSettings;
   private accumulator: number = 0;
   public onSanityReset?: (reason: string) => void;
 
@@ -29,6 +31,7 @@ export class SimulationPhysicsEngine {
 
   constructor(options: PhysicsEngineOptions = {}) {
     this.fixedDt = options.fixedTimestepSeconds || 1 / 60;
+    this.realism = options.realism;
   }
 
   public async init(robotSpec?: RobotAssemblySpec, spawnPose?: SpawnPose): Promise<void> {
@@ -50,8 +53,14 @@ export class SimulationPhysicsEngine {
     const spec = robotSpec || getFllAdvanceDrivingBaseSpec();
     const pose = spawnPose || this.defaultPose;
     this.robot = new RobotPhysicsBody(this.world, spec, pose);
+    if (this.realism) this.robot.setRealism(this.realism);
 
     this.isInitialized = true;
+  }
+
+  public setRealism(settings: PhysicsRealismSettings): void {
+    this.realism = { ...settings };
+    this.robot?.setRealism(settings);
   }
 
   /**

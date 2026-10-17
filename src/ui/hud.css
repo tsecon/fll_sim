@@ -5073,3 +5073,32 @@ body, html {
 .spike-palette-drawer.palette-disabled .spike-palette-block {
   cursor: not-allowed;
 }
+
+/* Robot Design: Physics Realism section */
+.physics-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.physics-toggle-row input {
+  margin-top: 2px;
+}
+
+.physics-input {
+  width: 72px;
+}
+
+.physics-input:disabled {
+  opacity: 0.45;
+}
+
+.physics-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
