@@ -1,9 +1,7 @@
 name: Deploy FLL Simulator to GitHub Pages
 
+# Manual only: this fork deploys to its VPS (deploy-vps.yml) and has GitHub Pages disabled
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
