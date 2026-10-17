@@ -206,12 +206,74 @@ export class VirtualSpikeApi {
       switch (unit.toLowerCase()) {
         case 'cm':
           return (amount / wheelCircumferenceCm) * 360;
+        case 'in':
+          return ((amount * 2.54) / wheelCircumferenceCm) * 360;
         case 'rotations':
           return amount * 360;
         case 'degrees':
         default:
           return amount;
       }
+    };
+
+    /**
+     * Runs both drive motors for a distance ('cm', 'in', 'rotations', 'degrees') or a duration
+     * ('seconds'). With unequal speeds the slower wheel covers proportionally less, so both finish together.
+     */
+    const drivePair = (amount: number, unit: string, leftSpeed: number, rightSpeed: number): Promise<void> | undefined => {
+      const bySeconds = unit.toLowerCase() === 'seconds';
+      const target = bySeconds ? amount : distanceToDegrees(amount, unit);
+      const maxSpeed = Math.max(Math.abs(leftSpeed), Math.abs(rightSpeed));
+      if (maxSpeed < 1e-4 || Math.abs(target) < 1e-4) {
+        return;
+      }
+
+      const run = (motor: typeof motorL, wheelSpeed: number, onDone: () => void) => {
+        if (bySeconds) {
+          motor!.runForTime(target, wheelSpeed, onDone);
+        } else {
+          motor!.runForDegrees(target * (Math.abs(wheelSpeed) / maxSpeed), wheelSpeed, onDone);
+        }
+      };
+
+      return new Promise<void>((resolve, reject) => {
+        let leftDone = Math.abs(leftSpeed) < 1e-4 || !motorL;
+        let rightDone = Math.abs(rightSpeed) < 1e-4 || !motorR;
+
+        const checkDone = () => {
+          if (leftDone && rightDone) {
+            self.engine.robot?.brakeChassisAndWheels();
+            resolve();
+          }
+        };
+
+        if (!leftDone) {
+          run(motorL, leftSpeed, () => {
+            leftDone = true;
+            checkDone();
+          });
+        }
+        if (!rightDone) {
+          run(motorR, rightSpeed, () => {
+            rightDone = true;
+            checkDone();
+          });
+        }
+
+        checkDone();
+
+        const abortCheck = setInterval(() => {
+          if (self.abortSignal?.aborted) {
+            clearInterval(abortCheck);
+            motorL?.stop();
+            motorR?.stop();
+            reject(new Error('Aborted'));
+          }
+          if (leftDone && rightDone) {
+            clearInterval(abortCheck);
+          }
+        }, 30);
+      });
     };
 
     return {
@@ -257,7 +319,6 @@ export class VirtualSpikeApi {
       },
       move: async (amount: number, unit = 'cm', steering = 0, speed?: number) => {
         self.checkAborted();
-        const targetDeg = distanceToDegrees(amount, unit);
         const spd = speed !== undefined ? speed : defaultSpeed;
 
         let leftSpeed = spd;
@@ -267,61 +328,7 @@ export class VirtualSpikeApi {
         } else if (steering < 0) {
           leftSpeed = spd * (1 - (2 * Math.abs(steering)) / 100);
         }
-
-        const maxSpeed = Math.max(Math.abs(leftSpeed), Math.abs(rightSpeed));
-        if (maxSpeed < 1e-4 || Math.abs(targetDeg) < 1e-4) {
-          return;
-        }
-
-        const targetDegL = targetDeg * (Math.abs(leftSpeed) / maxSpeed);
-        const targetDegR = targetDeg * (Math.abs(rightSpeed) / maxSpeed);
-
-        return new Promise<void>((resolve, reject) => {
-          let leftDone = Math.abs(leftSpeed) < 1e-4;
-          let rightDone = Math.abs(rightSpeed) < 1e-4;
-
-          const checkDone = () => {
-            if (leftDone && rightDone) {
-              self.engine.robot?.brakeChassisAndWheels();
-              resolve();
-            }
-          };
-
-          if (!leftDone) {
-            if (motorL) {
-              motorL.runForDegrees(targetDegL, leftSpeed, () => {
-                leftDone = true;
-                checkDone();
-              });
-            } else {
-              leftDone = true;
-            }
-          }
-          if (!rightDone) {
-            if (motorR) {
-              motorR.runForDegrees(targetDegR, rightSpeed, () => {
-                rightDone = true;
-                checkDone();
-              });
-            } else {
-              rightDone = true;
-            }
-          }
-
-          checkDone();
-
-          const abortCheck = setInterval(() => {
-            if (self.abortSignal?.aborted) {
-              clearInterval(abortCheck);
-              motorL?.stop();
-              motorR?.stop();
-              reject(new Error('Aborted'));
-            }
-            if (leftDone && rightDone) {
-              clearInterval(abortCheck);
-            }
-          }, 30);
-        });
+        return drivePair(amount, unit, leftSpeed, rightSpeed);
       },
       move_tank: async (
         amount: number,
@@ -330,61 +337,7 @@ export class VirtualSpikeApi {
         rightSpeed = 50
       ) => {
         self.checkAborted();
-        const targetDeg = distanceToDegrees(amount, unit);
-        const maxSpeed = Math.max(Math.abs(leftSpeed), Math.abs(rightSpeed));
-        if (maxSpeed < 1e-4 || Math.abs(targetDeg) < 1e-4) {
-          return;
-        }
-
-        const targetDegL = targetDeg * (Math.abs(leftSpeed) / maxSpeed);
-        const targetDegR = targetDeg * (Math.abs(rightSpeed) / maxSpeed);
-
-        return new Promise<void>((resolve, reject) => {
-          let leftDone = Math.abs(leftSpeed) < 1e-4;
-          let rightDone = Math.abs(rightSpeed) < 1e-4;
-
-          const checkDone = () => {
-            if (leftDone && rightDone) {
-              self.engine.robot?.brakeChassisAndWheels();
-              resolve();
-            }
-          };
-
-          if (!leftDone) {
-            if (motorL) {
-              motorL.runForDegrees(targetDegL, leftSpeed, () => {
-                leftDone = true;
-                checkDone();
-              });
-            } else {
-              leftDone = true;
-            }
-          }
-          if (!rightDone) {
-            if (motorR) {
-              motorR.runForDegrees(targetDegR, rightSpeed, () => {
-                rightDone = true;
-                checkDone();
-              });
-            } else {
-              rightDone = true;
-            }
-          }
-
-          checkDone();
-
-          const abortCheck = setInterval(() => {
-            if (self.abortSignal?.aborted) {
-              clearInterval(abortCheck);
-              motorL?.stop();
-              motorR?.stop();
-              reject(new Error('Aborted'));
-            }
-            if (leftDone && rightDone) {
-              clearInterval(abortCheck);
-            }
-          }, 30);
-        });
+        return drivePair(amount, unit, leftSpeed, rightSpeed);
       },
     };
   }

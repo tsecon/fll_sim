@@ -123,7 +123,7 @@ target_light = 50   # Edge of line target (50% reflected light)
 kp = 0.85           # Proportional gain
 base_speed = 35     # Base driving velocity
 
-for step in range(250):
+for _ in range(250):
     light = color_c.get_reflected_light()
     error = target_light - light
     steering = error * kp
@@ -144,7 +144,8 @@ sensor_c = ColorSensor('C') # Left
 sensor_d = ColorSensor('D') # Right
 
 # Drive toward line
-motors.start(0, 30)
+motors.set_default_speed(30)
+motors.start()
 while sensor_c.get_reflected_light() > 30 and sensor_d.get_reflected_light() > 30:
     wait_for_seconds(0.01)
 motors.stop()

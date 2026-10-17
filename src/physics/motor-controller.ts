@@ -10,6 +10,12 @@ export interface MotorTarget {
   onComplete?: () => void;
 }
 
+// Measured-rotation degree moves: slow down so the brake ramp lands on the target (deg/s², deg/s)
+const APPROACH_DECEL_DEG_PER_S2 = 1800;
+const MIN_APPROACH_SPEED_DEG_PER_S = 60;
+// A degree move whose wheel is blocked this long gives up, like SPIKE stall detection
+const STALL_TIMEOUT_SEC = 1.0;
+
 export class VirtualMotor {
   public port: MotorPort;
   public degrees: number = 0; // Accumulated encoder angle
@@ -22,6 +28,7 @@ export class VirtualMotor {
   public countActualRotation = false;
 
   private activeTarget: MotorTarget | null = null;
+  private stalledSec = 0;
   private stopAction: StopAction = 'BRAKE';
 
   constructor(port: MotorPort) {
@@ -76,6 +83,7 @@ export class VirtualMotor {
     const absDeg = Math.abs(degrees);
     const speed = Math.abs((clampedSpeed / 100) * this.maxSpeedDegPerSec) * totalDir;
 
+    this.stalledSec = 0;
     this.activeTarget = {
       type: 'DEGREES',
       targetSpeedDegPerSec: speed,
@@ -153,13 +161,23 @@ export class VirtualMotor {
     this.targetSpeedDegPerSec = targetSpeedDegPerSec;
 
     // Simulate movement
-    const stepDeltaDeg = Math.abs(targetSpeedDegPerSec * dt);
     if (!measured) this.degrees += targetSpeedDegPerSec * dt;
+    // Measured: progress is the wheel's real travel toward the target, so acceleration lag and
+    // slip cannot end a degree move early
+    const direction = Math.sign(targetSpeedDegPerSec);
+    const stepDeltaDeg = measured
+      ? Math.max(0, this.velocityDegPerSec * direction * dt)
+      : Math.abs(targetSpeedDegPerSec * dt);
 
     if (type === 'DEGREES' && this.activeTarget.remainingDegrees !== undefined) {
-      this.activeTarget.remainingDegrees -= stepDeltaDeg;
-      if (this.activeTarget.remainingDegrees <= 0) {
+      const remaining = (this.activeTarget.remainingDegrees -= stepDeltaDeg);
+      this.stalledSec = measured && Math.abs(this.velocityDegPerSec) < 5 ? this.stalledSec + dt : 0;
+      if (remaining <= 0 || this.stalledSec > STALL_TIMEOUT_SEC) {
         this.stop(this.activeTarget.stopAction);
+      } else if (measured) {
+        const approach = Math.sqrt(2 * APPROACH_DECEL_DEG_PER_S2 * remaining);
+        const limited = Math.min(Math.abs(targetSpeedDegPerSec), Math.max(MIN_APPROACH_SPEED_DEG_PER_S, approach));
+        this.targetSpeedDegPerSec = direction * limited;
       }
     } else if (type === 'TIME' && this.activeTarget.remainingSeconds !== undefined) {
       this.activeTarget.remainingSeconds -= dt;

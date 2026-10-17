@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { SpikeScratchImporter, VisualBlock } from '../src/runtime/spike-scratch-importer';
 import { PythonScriptRunner } from '../src/runtime/python-runner';
 import { SAMPLE_MISSIONS, SPIKE_PALETTE_ITEMS } from '../src/ui/hud';
-import { applyBlockValueEdit, buildEditableLabel, deleteBlock, getDisplayValue, getEditableParams } from '../src/ui/word-block-values';
+import { applyBlockValueEdit, buildEditableLabel, deleteBlock, getChoices, getDisplayValue, getEditableParams } from '../src/ui/word-block-values';
+import { SimulationPhysicsEngine } from '../src/physics/engine';
+import { VirtualSensorManager, DetectedColorName } from '../src/sensors/sensor-manager';
+import { VirtualSpikeApi } from '../src/runtime/spike-api';
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -425,4 +428,64 @@ describe('Word Block tabs do not share block objects', () => {
 
     expect(sample.visualBlocks).toEqual(original);
   });
+});
+
+describe('Word Block choices match what the simulator supports', () => {
+  const flatten = (blocks: VisualBlock[], out: VisualBlock[] = []): VisualBlock[] => {
+    for (const b of blocks) {
+      out.push(b);
+      flatten(b.children ?? [], out);
+      flatten(b.elseChildren ?? [], out);
+    }
+    return out;
+  };
+
+  it.each(Object.entries(SAMPLE_MISSIONS))('%s: every editable value maps to a statement in its code', (_key, mission) => {
+    for (const b of flatten(mission.visualBlocks ?? [])) {
+      for (const param of getEditableParams(b)) {
+        const choices = getChoices(b, param);
+        const next = choices.length > 0 ? choices.find((c) => c.value !== b.params[param])!.value : String(Number(b.params[param]) + 1);
+        const res = applyBlockValueEdit(clone(mission.visualBlocks!), mission.code, b.id, param, next);
+        // Port pairs may legitimately reject a value that collides with the other port
+        if (!res.ok) expect(res.error, `${b.id}.${param}`).toMatch(/different ports/);
+      }
+    }
+  });
+
+  it('color choices only offer colors the sensor can detect', () => {
+    const detectable: DetectedColorName[] = ['black', 'white', 'red', 'green', 'blue', 'yellow'];
+    const colorBlock = block('c1', 'color.wait_until', { port: 'C', color: 'black' });
+    for (const c of getChoices(colorBlock, 'color')) {
+      expect(detectable).toContain(c.value);
+    }
+  });
+
+  it.each(['cm', 'in', 'rotations', 'degrees', 'seconds'])('MotorPair.move supports the "%s" unit offered by move blocks', async (unit) => {
+    const moveBlock = block('m1', 'flippermove_move', { direction: 'forward', value: '10', unit: 'cm' });
+    expect(getChoices(moveBlock, 'unit').map((c) => c.value)).toContain(unit);
+
+    const engine = new SimulationPhysicsEngine();
+    await engine.init();
+    const api = new VirtualSpikeApi(engine, new VirtualSensorManager(engine.robot));
+    const pair = api.createMotorPair('A', 'B');
+    const timer = setInterval(() => engine.update(1 / 60), 16);
+    const started = Date.now();
+    try {
+      await pair.move(unit === 'seconds' ? 0.5 : 10, unit);
+    } finally {
+      clearInterval(timer);
+    }
+    const wheelCm = 2 * Math.PI * engine.robot.wheelRadius * 100;
+    const expectedDeg: Record<string, number> = {
+      cm: (10 / wheelCm) * 360,
+      in: ((25.4) / wheelCm) * 360,
+      rotations: 3600,
+      degrees: 10,
+    };
+    if (unit === 'seconds') {
+      expect(Date.now() - started).toBeGreaterThanOrEqual(450);
+    } else {
+      expect(Math.abs(engine.robot.motors.get('A')!.degrees - expectedDeg[unit])).toBeLessThan(Math.max(20, expectedDeg[unit] * 0.02));
+    }
+  }, 30000);
 });

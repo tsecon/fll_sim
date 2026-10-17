@@ -47,7 +47,8 @@ const MOTOR_DIRS_ICON: Choice[] = [
 const MOVE_DIRS = same(['forward', 'back']);
 const MOVE_UNITS = same(['cm', 'in', 'rotations', 'degrees', 'seconds']);
 const MOTOR_UNITS = same(['rotations', 'degrees', 'seconds']);
-const COLORS = same(['black', 'violet', 'blue', 'cyan', 'green', 'yellow', 'red', 'white']);
+/** Colors VirtualSensorManager can classify */
+const COLORS = same(['black', 'blue', 'green', 'yellow', 'red', 'white']);
 const PALETTE_MOVE_DIRS: Choice[] = [
   { value: 'straight', label: '⬆' },
   { value: 'back', label: '⬇' },

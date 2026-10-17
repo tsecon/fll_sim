@@ -293,12 +293,15 @@ motors = MotorPair('A', 'B')
 color_c = ColorSensor('C')
 
 # P-Controller Settings
-target_light = 50   # Edge of line (50% reflected light)
-kp = 0.85           # Proportional gain
-base_speed = 35     # Base driving velocity
+# Edge of line (50% reflected light)
+target_light = 50
+# Proportional gain
+kp = 0.85
+# Base driving velocity
+base_speed = 35
 
 print("Starting P-Controller line follower on black track...")
-for step in range(250):
+for _ in range(250):
     light = color_c.get_reflected_light()
     error = target_light - light
     steering = error * kp
@@ -328,6 +331,33 @@ print("Line following sequence finished!")
         colorHex: '#0284c7',
       },
       {
+        id: 'lf-target',
+        opcode: 'data_setvariableto',
+        category: 'variable',
+        icon: '📦',
+        label: 'Set [target_light] to [50]',
+        params: { variable: 'target_light', value: '50' },
+        colorHex: '#ea580c',
+      },
+      {
+        id: 'lf-kp',
+        opcode: 'data_setvariableto',
+        category: 'variable',
+        icon: '📦',
+        label: 'Set [kp] to [0.85]',
+        params: { variable: 'kp', value: '0.85' },
+        colorHex: '#ea580c',
+      },
+      {
+        id: 'lf-speed',
+        opcode: 'data_setvariableto',
+        category: 'variable',
+        icon: '📦',
+        label: 'Set [base_speed] to [35]',
+        params: { variable: 'base_speed', value: '35' },
+        colorHex: '#ea580c',
+      },
+      {
         id: 'lf-repeat',
         opcode: 'control_repeat',
         category: 'control',
@@ -341,8 +371,8 @@ print("Line following sequence finished!")
             opcode: 'flippermove_startSteer',
             category: 'movement',
             icon: '🔄',
-            label: 'Start steering [(50 - Reflected Light) * 0.85] at [35%]',
-            params: { steering: '(50 - Light) * 0.85', speed: '35' },
+            label: 'Start steering [(target_light - Reflected Light) * kp] at [base_speed%]',
+            params: { steering: 'steering', speed: 'base_speed' },
             colorHex: '#0284c7',
           },
           {
@@ -377,7 +407,8 @@ sensor_c = ColorSensor('C') # Left
 sensor_d = ColorSensor('D') # Right
 
 print("Driving toward line at 30% speed...")
-motors.start(0, 30)
+motors.set_default_speed(30)
+motors.start()
 
 step_count = 0
 while sensor_c.get_reflected_light() > 30 and sensor_d.get_reflected_light() > 30 and step_count < 250:
@@ -420,6 +451,15 @@ print("Robot perfectly squared to line!")
         icon: '🚗',
         label: 'Set movement motors to [A+B]',
         params: { left: 'A', right: 'B' },
+        colorHex: '#0284c7',
+      },
+      {
+        id: 'ls-spd',
+        opcode: 'flippermove_movementSpeed',
+        category: 'movement',
+        icon: '⚡',
+        label: 'Set movement speed to [30%]',
+        params: { speed: '30' },
         colorHex: '#0284c7',
       },
       {

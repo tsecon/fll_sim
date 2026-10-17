@@ -119,4 +119,21 @@ describe('Physics realism', () => {
     const encoderCm = (engine.robot.motors.get('A')!.degrees / 360) * wheelCm;
     expect(Math.abs(encoderCm - distanceCm)).toBeLessThan(distanceCm * 0.05);
   });
+
+  it.each([
+    [90, 100],
+    [90, 30],
+    [720, 50],
+  ])('a %i° move at %i%% completes on real wheel travel and settles near the target', async (deg, speed) => {
+    const engine = await createEngine(DEFAULT_REALISTIC_PHYSICS);
+    const motor = engine.robot.motors.get('A')!;
+    let doneAt: number | null = null;
+    motor.runForDegrees(deg, speed, () => {
+      doneAt = motor.degrees;
+    });
+    step(engine, 300);
+    expect(doneAt).not.toBeNull();
+    expect(doneAt!).toBeGreaterThanOrEqual(deg - 1);
+    expect(Math.abs(motor.degrees - deg)).toBeLessThan(6);
+  });
 });
