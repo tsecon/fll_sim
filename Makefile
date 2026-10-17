@@ -18,6 +18,7 @@ help:
 	@echo ""
 
 setup:
+	@command -v mise >/dev/null 2>&1 || { echo "❌ mise not found. Install it first: brew install mise (https://mise.jdx.dev)"; exit 1; }
 	mise install
 	@if [ -f package.json ]; then npm install; fi
 
