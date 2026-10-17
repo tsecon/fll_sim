@@ -721,6 +721,81 @@ body, html {
   border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
+/* Editable numeric values inside blocks */
+.word-block-value {
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: center;
+  cursor: text;
+  border-bottom: 1px dashed currentColor;
+  /* Larger hit area without shifting the label layout */
+  padding: 3px 4px;
+  margin: -3px -4px;
+}
+
+.word-block-value-choice {
+  cursor: pointer;
+}
+
+.word-block-value:hover,
+.word-block-value:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+.word-block-value-input {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+  background: #ffffff;
+  border: 2px solid #2563eb;
+  border-radius: 12px;
+  padding: 0 6px;
+  margin: 0 2px;
+  text-align: center;
+}
+
+.word-block-choice-menu {
+  position: fixed;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  min-width: 72px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.word-block-choice-option {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #f8fafc;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.word-block-choice-option:hover,
+.word-block-choice-option:focus-visible {
+  background: rgba(37, 99, 235, 0.6);
+  outline: none;
+}
+
+.word-block-choice-option.is-selected {
+  color: #93c5fd;
+}
+
 /* Control C-Clamps (Loops, If/Else) */
 .word-block-control-clamp {
   background: transparent;
@@ -4997,4 +5072,33 @@ body, html {
 
 .spike-palette-drawer.palette-disabled .spike-palette-block {
   cursor: not-allowed;
+}
+
+/* Robot Design: Physics Realism section */
+.physics-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.physics-toggle-row input {
+  margin-top: 2px;
+}
+
+.physics-input {
+  width: 72px;
+}
+
+.physics-input:disabled {
+  opacity: 0.45;
+}
+
+.physics-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

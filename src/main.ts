@@ -507,6 +507,9 @@ async function bootstrapSimulator() {
         }`
       );
     },
+    onPhysicsRealismChange: (settings) => {
+      engine.setRealism(settings);
+    },
     onPortMappingChange: (mappings) => {
       const isPort = (p: string): p is MotorPort => ['A', 'B', 'C', 'D', 'E', 'F'].includes(p);
       const left = isPort(mappings.driveLeft) ? mappings.driveLeft : 'A';
@@ -523,6 +526,7 @@ async function bootstrapSimulator() {
   const initLeft = isPort(initialPortMappings.driveLeft) ? initialPortMappings.driveLeft : 'A';
   const initRight = isPort(initialPortMappings.driveRight) ? initialPortMappings.driveRight : 'B';
   engine.robot.setDrivePorts?.(initLeft, initRight);
+  engine.setRealism(hud.getPhysicsRealism());
 
   engine.robot.onBrakeEngaged = () => {
     hud.logCommand('BRAKE', 'Physics Engine', 'Active electromagnetic brake: Chassis & wheels clamped (0.00 Nm torque)');

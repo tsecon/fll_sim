@@ -123,7 +123,7 @@ target_light = 50   # Edge of line target (50% reflected light)
 kp = 0.85           # Proportional gain
 base_speed = 35     # Base driving velocity
 
-for step in range(250):
+for _ in range(250):
     light = color_c.get_reflected_light()
     error = target_light - light
     steering = error * kp
@@ -144,7 +144,8 @@ sensor_c = ColorSensor('C') # Left
 sensor_d = ColorSensor('D') # Right
 
 # Drive toward line
-motors.start(0, 30)
+motors.set_default_speed(30)
+motors.start()
 while sensor_c.get_reflected_light() > 30 and sensor_d.get_reflected_light() > 30:
     wait_for_seconds(0.01)
 motors.stop()
@@ -166,3 +167,28 @@ for i in range(100):
 motors.stop()
 print("Robot perfectly squared to line!")
 ```
+
+---
+
+## 6. Gyro Control Templates
+
+The **📜 Mission** dropdown also includes a **🧭 Gyro Control Templates** group with the four control examples from the *2026 FLL Advanced Coding Camp by FRC 9023*. In each template, the My Block inputs (Target Angle, Speed, Degrees) and gains are variables at the top of the program. You can edit them in Word Blocks, and the Python code updates to match.
+
+| Template | Algorithm | Inputs |
+| :--- | :--- | :--- |
+| **Basic Gyro Turn** | Constant-speed tank turn that stops at `target_angle - overshoot` | `target_angle`, `overshoot`, `turn_speed` |
+| **P Control Gyro Turn** | `speed = kp * error`, min-speed clamp, stops when `abs(error) <= tolerance` (works for left and right) | `target_angle`, `kp`, `min_speed`, `tolerance` |
+| **P Control Gyro Straight** | Holds heading 0 with `steering = error * kp` until the average wheel degrees reach the target | `speed`, `degrees`, `kp` |
+| **PID Control Gyro Straight** | `steering = error*kp + integral*ki + derivative*kd`, with an integral windup cap | `speed`, `degrees`, `kp`, `ki`, `kd`, `integral_cap` |
+
+The straight-drive templates reset the wheel encoders with `Motor.set_degrees_counted(0)` and measure distance as `(abs(motor_a.get_degrees_counted()) + abs(motor_b.get_degrees_counted())) / 2`.
+
+### Realistic physics
+
+**🤖 Robot Design → Section C: Physics Realism** is on by default:
+
+* **Momentum**: motors speed up and brake gradually, so a robot that stops at speed keeps turning a few degrees. Basic Gyro Turn ends past its early stop point, and the faster the turn, the further it goes.
+* **Drift**: nothing holds the robot straight behind the scenes. A slightly smaller right tire (0.5%) and a slightly weaker right motor (1.5%) make an uncorrected straight drive curve to the right. P Control Gyro Straight removes most of the drift. With a large mismatch, P alone leaves a small constant heading error, and the integral term in PID removes it.
+* **Encoders** count real wheel rotation, including coasting after a stop.
+
+Turn the toggle off for an ideal robot that stops dead and drives perfectly straight.

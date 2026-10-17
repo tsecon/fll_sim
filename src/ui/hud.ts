@@ -3,13 +3,21 @@ import { CameraViewPreset } from '../view/viewport';
 import { SimulatorAppMode } from '../missions/mission-manager';
 import { MatMapType } from '../view/mat-texture';
 import { MotorPort } from '../physics/motor-controller';
+import { PhysicsRealismSettings, DEFAULT_REALISTIC_PHYSICS } from '../physics/robot-body';
 
 import { SeasonMissionSpec } from '../missions/season-config';
 import { legoAssetManager, LegoRenderMode } from '../cad/lego-asset-manager';
 import { profiler } from '../core/performance-profiler';
 import { SpikeScratchImporter, VisualBlock } from '../runtime/spike-scratch-importer';
+import { applyBlockValueEdit, buildEditableLabel, deleteBlock, getChoices, getDisplayValue, getParamKind } from './word-block-values';
 import JSZip from 'jszip';
 import { DISPLAY_VERSION } from '../config/version';
+import { MISSION_TEMPLATES } from './mission-templates';
+
+/** Escapes text for HTML content and double-quoted attributes */
+function escapeHtml(text: string): string {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 export type ScriptKind = 'python' | 'blocks';
 
@@ -134,6 +142,7 @@ export interface HudCallbacks {
   onResetGyro?: () => void;
   onRobotPresetChange?: (preset: 'advanced' | 'compact') => void;
   onPortMappingChange?: (mappings: RobotPortMapping) => void;
+  onPhysicsRealismChange?: (settings: PhysicsRealismSettings) => void;
 }
 
 export const SAMPLE_MISSIONS: Record<string, { title: string; code: string; visualBlocks?: VisualBlock[] }> = {
@@ -284,12 +293,15 @@ motors = MotorPair('A', 'B')
 color_c = ColorSensor('C')
 
 # P-Controller Settings
-target_light = 50   # Edge of line (50% reflected light)
-kp = 0.85           # Proportional gain
-base_speed = 35     # Base driving velocity
+# Edge of line (50% reflected light)
+target_light = 50
+# Proportional gain
+kp = 0.85
+# Base driving velocity
+base_speed = 35
 
 print("Starting P-Controller line follower on black track...")
-for step in range(250):
+for _ in range(250):
     light = color_c.get_reflected_light()
     error = target_light - light
     steering = error * kp
@@ -319,6 +331,33 @@ print("Line following sequence finished!")
         colorHex: '#0284c7',
       },
       {
+        id: 'lf-target',
+        opcode: 'data_setvariableto',
+        category: 'variable',
+        icon: '📦',
+        label: 'Set [target_light] to [50]',
+        params: { variable: 'target_light', value: '50' },
+        colorHex: '#ea580c',
+      },
+      {
+        id: 'lf-kp',
+        opcode: 'data_setvariableto',
+        category: 'variable',
+        icon: '📦',
+        label: 'Set [kp] to [0.85]',
+        params: { variable: 'kp', value: '0.85' },
+        colorHex: '#ea580c',
+      },
+      {
+        id: 'lf-speed',
+        opcode: 'data_setvariableto',
+        category: 'variable',
+        icon: '📦',
+        label: 'Set [base_speed] to [35]',
+        params: { variable: 'base_speed', value: '35' },
+        colorHex: '#ea580c',
+      },
+      {
         id: 'lf-repeat',
         opcode: 'control_repeat',
         category: 'control',
@@ -332,8 +371,8 @@ print("Line following sequence finished!")
             opcode: 'flippermove_startSteer',
             category: 'movement',
             icon: '🔄',
-            label: 'Start steering [(50 - Reflected Light) * 0.85] at [35%]',
-            params: { steering: '(50 - Light) * 0.85', speed: '35' },
+            label: 'Start steering [(target_light - Reflected Light) * kp] at [base_speed%]',
+            params: { steering: 'steering', speed: 'base_speed' },
             colorHex: '#0284c7',
           },
           {
@@ -368,7 +407,8 @@ sensor_c = ColorSensor('C') # Left
 sensor_d = ColorSensor('D') # Right
 
 print("Driving toward line at 30% speed...")
-motors.start(0, 30)
+motors.set_default_speed(30)
+motors.start()
 
 step_count = 0
 while sensor_c.get_reflected_light() > 30 and sensor_d.get_reflected_light() > 30 and step_count < 250:
@@ -414,6 +454,15 @@ print("Robot perfectly squared to line!")
         colorHex: '#0284c7',
       },
       {
+        id: 'ls-spd',
+        opcode: 'flippermove_movementSpeed',
+        category: 'movement',
+        icon: '⚡',
+        label: 'Set movement speed to [30%]',
+        params: { speed: '30' },
+        colorHex: '#0284c7',
+      },
+      {
         id: 'ls-start',
         opcode: 'flippermove_startMove',
         category: 'movement',
@@ -442,6 +491,7 @@ print("Robot perfectly squared to line!")
       },
     ],
   },
+  ...MISSION_TEMPLATES,
 };
 
 export interface SpikePaletteItem {
@@ -932,6 +982,8 @@ export class SimulatorHud {
   private portMappings: RobotPortMapping = { ...DEFAULT_PORT_MAPPING };
   private readonly PORT_STORAGE_KEY = 'fll_robot_port_mappings';
   private readonly ROBOT_PRESET_STORAGE_KEY = 'fll_robot_active_preset';
+  private readonly PHYSICS_STORAGE_KEY = 'fll_physics_realism';
+  private physicsRealism: PhysicsRealismSettings = { ...DEFAULT_REALISTIC_PHYSICS };
 
   // Spawn pose configuration elements
   private spawnInputX!: HTMLInputElement;
@@ -976,6 +1028,10 @@ export class SimulatorHud {
   // Word Blocks vs Python mode
   private editorViewMode: 'blocks' | 'python' = 'blocks';
   private wordBlocksContainer!: HTMLElement;
+  /** Commits the open Word Block value input, if any */
+  private pendingBlockValueEdit: (() => void) | null = null;
+  /** Closes the open Word Block option menu, if any */
+  private closeBlockChoiceMenu: (() => void) | null = null;
   private btnViewModeBlocks!: HTMLButtonElement;
   private btnViewModePython!: HTMLButtonElement;
   private spikeScratchFileInput!: HTMLInputElement;
@@ -986,7 +1042,7 @@ export class SimulatorHud {
       title: 'Mission 1',
       code: SAMPLE_MISSIONS.drive_straight.code,
       kind: 'blocks',
-      visualBlocks: SAMPLE_MISSIONS.drive_straight.visualBlocks,
+      visualBlocks: JSON.parse(JSON.stringify(SAMPLE_MISSIONS.drive_straight.visualBlocks)),
       readOnlyBlocks: false,
       _blocksBaselineCode: SAMPLE_MISSIONS.drive_straight.code,
     },
@@ -998,6 +1054,7 @@ export class SimulatorHud {
     this.callbacks = callbacks;
     this.loadScriptTabsFromStorage();
     this.loadPortMappingsFromStorage();
+    this.loadPhysicsRealismFromStorage();
     this.rootElement = document.createElement('div');
     this.rootElement.className = 'fll-hud-root';
     container.appendChild(this.rootElement);
@@ -1107,6 +1164,9 @@ export class SimulatorHud {
               <option value="gyro_turn">Mission 2: Gyro 90° Turn</option>
               <option value="line_follower">Mission 3: Proportional Line Follower</option>
               <option value="line_squaring">Mission 4: Dual-Sensor Line Squaring</option>
+              <optgroup label="🧭 Gyro Control Templates">
+                ${Object.entries(MISSION_TEMPLATES).map(([key, tpl]) => `<option value="${key}">${escapeHtml(tpl.title)}</option>`).join('')}
+              </optgroup>
             </select>
             <button class="btn btn-xs btn-secondary" id="btn-import-code" title="Import Code or ZIP (.py, .llsp, .llsp3, .sb3, .json, .zip)">
               📥 Import Code
@@ -2220,6 +2280,51 @@ export class SimulatorHud {
                 </div>
               </div>
             </div>
+
+            <!-- SECTION C: Physics Realism -->
+            <div class="design-section design-section-physics">
+              <div class="section-title-row">
+                <span class="section-badge">SECTION C</span>
+                <span class="section-title">Physics Realism</span>
+                <span class="section-hint">Momentum after stopping &amp; built-in heading drift</span>
+              </div>
+              <label class="physics-toggle-row">
+                <input type="checkbox" id="chk-physics-realism">
+                <span><strong>Realistic physics</strong>: motors ramp up and brake gradually, so the robot keeps turning a few degrees after it stops, and nothing secretly holds it straight. Turn off for an ideal robot.</span>
+              </label>
+              <div class="port-mapping-grid">
+                <div class="port-item-card">
+                  <div class="port-item-header">
+                    <span class="port-item-icon">🛞</span>
+                    <div class="port-item-info">
+                      <div class="port-item-name">Tire Mismatch</div>
+                      <div class="port-item-role">Worn tire: the robot curves even when both wheels turn equally</div>
+                    </div>
+                  </div>
+                  <div class="port-item-select-row">
+                    <label for="input-physics-wheel-mismatch">Right tire smaller by (%):</label>
+                    <input type="number" class="hud-select hud-select-xs physics-input" id="input-physics-wheel-mismatch" min="-5" max="5" step="0.1">
+                  </div>
+                </div>
+                <div class="port-item-card">
+                  <div class="port-item-header">
+                    <span class="port-item-icon">⚙️</span>
+                    <div class="port-item-info">
+                      <div class="port-item-name">Motor Mismatch</div>
+                      <div class="port-item-role">One motor reaches slightly less than its commanded speed</div>
+                    </div>
+                  </div>
+                  <div class="port-item-select-row">
+                    <label for="input-physics-motor-mismatch">Right motor weaker by (%):</label>
+                    <input type="number" class="hud-select hud-select-xs physics-input" id="input-physics-motor-mismatch" min="-5" max="5" step="0.1">
+                  </div>
+                </div>
+              </div>
+              <div class="physics-actions">
+                <span class="section-hint">Negative values put the mismatch on the left side.</span>
+                <button class="btn btn-xs btn-outline" id="btn-physics-defaults">↺ Reset to defaults</button>
+              </div>
+            </div>
           </div>
 
           <div class="robot-design-modal-footer">
@@ -3184,6 +3289,29 @@ export class SimulatorHud {
         }
       });
     });
+
+    // Physics realism controls
+    const chkRealism = this.rootElement.querySelector('#chk-physics-realism') as HTMLInputElement | null;
+    const inputWheel = this.rootElement.querySelector('#input-physics-wheel-mismatch') as HTMLInputElement | null;
+    const inputMotor = this.rootElement.querySelector('#input-physics-motor-mismatch') as HTMLInputElement | null;
+    const readPct = (input: HTMLInputElement | null, fallback: number) => {
+      const v = parseFloat(input?.value ?? '');
+      return Number.isFinite(v) ? Math.max(-5, Math.min(5, v)) : fallback;
+    };
+    const onPhysicsInput = () => {
+      this.setPhysicsRealism({
+        enabled: chkRealism?.checked ?? this.physicsRealism.enabled,
+        wheelMismatchPct: readPct(inputWheel, this.physicsRealism.wheelMismatchPct),
+        motorMismatchPct: readPct(inputMotor, this.physicsRealism.motorMismatchPct),
+      });
+    };
+    chkRealism?.addEventListener('change', onPhysicsInput);
+    inputWheel?.addEventListener('change', onPhysicsInput);
+    inputMotor?.addEventListener('change', onPhysicsInput);
+    this.rootElement.querySelector('#btn-physics-defaults')?.addEventListener('click', () => {
+      this.setPhysicsRealism({ ...DEFAULT_REALISTIC_PHYSICS });
+    });
+    this.syncPhysicsRealismUI();
 
     // Save Port Mapping button
     const btnSavePortMapping = this.rootElement.querySelector('#btn-save-port-mapping');
@@ -4568,6 +4696,54 @@ ${snap.recommendations.map((r) => `- ${r}`).join('\n')}
     }
   }
 
+  public getPhysicsRealism(): PhysicsRealismSettings {
+    return { ...this.physicsRealism };
+  }
+
+  public setPhysicsRealism(settings: PhysicsRealismSettings): void {
+    this.physicsRealism = { ...settings };
+    try {
+      localStorage.setItem(this.PHYSICS_STORAGE_KEY, JSON.stringify(this.physicsRealism));
+    } catch (e) {
+      console.warn('Could not save physics realism settings to localStorage:', e);
+    }
+    this.syncPhysicsRealismUI();
+    const { enabled, wheelMismatchPct, motorMismatchPct } = this.physicsRealism;
+    this.logConsole(
+      enabled
+        ? `🛞 Realistic physics ON (tire mismatch ${wheelMismatchPct}%, motor mismatch ${motorMismatchPct}%)`
+        : '🛞 Realistic physics OFF (ideal robot)'
+    );
+    this.callbacks.onPhysicsRealismChange?.(this.getPhysicsRealism());
+  }
+
+  private loadPhysicsRealismFromStorage(): void {
+    try {
+      const raw = localStorage.getItem(this.PHYSICS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && typeof parsed === 'object') {
+        this.physicsRealism = { ...DEFAULT_REALISTIC_PHYSICS, ...parsed };
+      }
+    } catch (e) {
+      console.warn('Could not load physics realism settings from storage:', e);
+    }
+  }
+
+  private syncPhysicsRealismUI(): void {
+    const chk = this.rootElement?.querySelector?.('#chk-physics-realism') as HTMLInputElement | null;
+    const wheel = this.rootElement?.querySelector?.('#input-physics-wheel-mismatch') as HTMLInputElement | null;
+    const motor = this.rootElement?.querySelector?.('#input-physics-motor-mismatch') as HTMLInputElement | null;
+    if (chk) chk.checked = this.physicsRealism.enabled;
+    if (wheel) {
+      wheel.value = String(this.physicsRealism.wheelMismatchPct);
+      wheel.disabled = !this.physicsRealism.enabled;
+    }
+    if (motor) {
+      motor.value = String(this.physicsRealism.motorMismatchPct);
+      motor.disabled = !this.physicsRealism.enabled;
+    }
+  }
+
   public syncPortMappingUI(): void {
     const roles: Array<keyof RobotPortMapping> = [
       'driveLeft', 'driveRight', 'aux1', 'aux2', 'aux3', 'aux4', 'colorLeft', 'colorRight', 'ultrasonic'
@@ -5664,12 +5840,20 @@ ${snap.recommendations.map((r) => `- ${r}`).join('\n')}
     // 2. Sample Season Missions
     html += `<optgroup label="🎯 Sample Missions">`;
     Object.entries(SAMPLE_MISSIONS).forEach(([key, sample]) => {
+      if (key in MISSION_TEMPLATES) return;
       const safeTitle = (sample.title || '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
       html += `<option value="sample_${key}">${safeTitle}</option>`;
+    });
+    html += `</optgroup>`;
+
+    // 3. Gyro control templates
+    html += `<optgroup label="🧭 Gyro Control Templates">`;
+    Object.entries(MISSION_TEMPLATES).forEach(([key, tpl]) => {
+      html += `<option value="sample_${key}">${escapeHtml(tpl.title)}</option>`;
     });
     html += `</optgroup>`;
 
@@ -5821,7 +6005,8 @@ ${snap.recommendations.map((r) => `- ${r}`).join('\n')}
       title,
       code,
       kind,
-      visualBlocks,
+      // Copy so editing a tab never mutates shared sample/import blocks
+      visualBlocks: visualBlocks ? JSON.parse(JSON.stringify(visualBlocks)) : undefined,
       readOnlyBlocks: false,
       _blocksBaselineCode: kind === 'blocks' ? code : undefined,
     });
@@ -6240,6 +6425,7 @@ print("Finished!")
 
   public renderVisualBlocks(): void {
     if (!this.wordBlocksContainer) return;
+    this.flushBlockEditors();
     const currentTab = this.scriptTabs[this.activeTabIndex];
     if (!currentTab || !currentTab.visualBlocks || currentTab.visualBlocks.length === 0) {
       this.wordBlocksContainer.innerHTML = `
@@ -6273,30 +6459,14 @@ print("Finished!")
     this.wordBlocksContainer.innerHTML = `
       <div class="word-blocks-stack">
         <div class="word-blocks-stack-header">
-          <span class="stack-title">🧩 ${currentTab.title}</span>
+          <span class="stack-title">🧩 ${escapeHtml(currentTab.title)}</span>
           <span class="stack-count">${currentTab.visualBlocks.length} blocks</span>
         </div>
         ${blocksHtml}
       </div>
     `;
 
-    // Wire block delete buttons in canvas
-    const delBtns = this.wordBlocksContainer.querySelectorAll('.btn-delete-block');
-    delBtns.forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = btn.getAttribute('data-delete-block-id');
-        if (id && currentTab.visualBlocks) {
-          const idx = currentTab.visualBlocks.findIndex((b) => b.id === id);
-          if (idx !== -1) {
-            currentTab.visualBlocks.splice(idx, 1);
-            this.renderVisualBlocks();
-            this.renderPopoutVisualBlocks();
-            this.triggerAutosave();
-          }
-        }
-      });
-    });
+    this.wireBlockEditors(this.wordBlocksContainer);
 
     this.updateScratchTransform();
     if (this.isPopoutCodeEditorOpen) {
@@ -6305,10 +6475,10 @@ print("Finished!")
   }
 
   private renderVisualBlockHtml(b: VisualBlock): string {
-    const isHat = b.category === 'event' || b.opcode.includes('when') || b.opcode.includes('start');
+    const isHat = b.category === 'event';
     const isControlWithChildren = b.category === 'control' && (Boolean(b.children) || Boolean(b.elseChildren));
 
-    const formattedLabel = this.formatBlockLabel(b.label);
+    const formattedLabel = this.formatEditableBlockLabel(b);
 
     if (isControlWithChildren) {
       const childrenHtml = b.children && b.children.length > 0
@@ -6343,22 +6513,258 @@ print("Finished!")
     }
 
     return `
-      <div class="word-block ${isHat ? 'word-block-hat' : ''}" style="--block-color: ${b.colorHex};" data-block-id="${b.id}">
+      <div class="word-block ${isHat ? 'word-block-hat' : ''}" style="--block-color: ${b.colorHex};" data-block-id="${escapeHtml(b.id)}">
         <div class="word-block-body">
           <span class="word-block-icon">${b.icon}</span>
           <span class="word-block-label">${formattedLabel}</span>
-          ${isHat ? '' : `<button class="btn-delete-block" data-delete-block-id="${b.id}" title="Delete Block">✕</button>`}
+          ${isHat ? '' : `<button class="btn-delete-block" data-delete-block-id="${escapeHtml(b.id)}" title="Delete Block">✕</button>`}
         </div>
       </div>
     `;
   }
 
+  /** Like formatBlockLabel, but numeric values the user can edit become clickable */
+  private formatEditableBlockLabel(b: VisualBlock): string {
+    const marked = buildEditableLabel(b, '\u0001', '\u0002');
+    if (marked === null) return this.formatBlockLabel(b.label);
+    return this.formatBlockLabel(marked).replace(
+      /\(\u0001(\w+)\u0002\)|\u0001(\w+)\u0002/g,
+      (_m, standalone: string | undefined, inPill: string | undefined) => {
+        const param = (standalone || inPill)!;
+        const kind = getParamKind(b, param);
+        const cls = `${standalone ? 'word-block-pill ' : ''}word-block-value word-block-value-${kind}`;
+        const title = kind === 'choice' ? 'Click to choose' : 'Click to edit';
+        return `<span class="${cls}" data-block-id="${escapeHtml(b.id)}" data-param="${param}" tabindex="0" title="${title}">${escapeHtml(getDisplayValue(b, param))}</span>`;
+      }
+    );
+  }
+
+  /** Commits an open value input and closes an open option menu (before re-rendering blocks) */
+  private flushBlockEditors(): void {
+    const pending = this.pendingBlockValueEdit;
+    this.pendingBlockValueEdit = null;
+    pending?.();
+    this.closeBlockChoiceMenu?.();
+  }
+
+  private wireBlockEditors(container: HTMLElement): void {
+    container.querySelectorAll<HTMLElement>('.btn-delete-block').forEach((btn) => {
+      // Keep focus in an open value input so its blur re-render can't swallow this click
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-delete-block-id');
+        if (id) this.deleteVisualBlock(id);
+      });
+    });
+    container.querySelectorAll<HTMLElement>('.word-block-value').forEach((el) => {
+      el.addEventListener('mousedown', (e) => e.stopPropagation());
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.startBlockValueEdit(el);
+      });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.startBlockValueEdit(el);
+        }
+      });
+    });
+  }
+
+  /** Whether blocks of the active tab may change; logs why not */
+  private canEditActiveBlocks(): boolean {
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab?.visualBlocks || currentTab.kind !== 'blocks') {
+      this.logConsole?.('⚠️ Word Blocks can only be edited in a Word Blocks script.');
+      return false;
+    }
+    if (currentTab.readOnlyBlocks) {
+      this.logConsole?.('⚠️ Word Blocks are read-only because Python code was edited.');
+      return false;
+    }
+    return true;
+  }
+
+  private startBlockValueEdit(el: HTMLElement): void {
+    if (!this.canEditActiveBlocks()) return;
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab.visualBlocks) return;
+    const blockId = el.dataset.blockId || '';
+    const param = el.dataset.param || '';
+    const block = this.findVisualBlock(currentTab.visualBlocks, blockId);
+    if (block && getParamKind(block, param) === 'choice') {
+      this.startBlockChoiceEdit(el, block, param);
+      return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.className = 'word-block-value-input';
+    input.value = el.textContent || '';
+    input.size = Math.max(2, input.value.length);
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = (commit: boolean) => {
+      if (finished) return;
+      finished = true;
+      this.pendingBlockValueEdit = null;
+      if (commit) {
+        this.commitBlockValueEdit(blockId, param, input.value);
+      } else {
+        this.renderVisualBlocks();
+        this.renderPopoutVisualBlocks();
+      }
+    };
+    this.pendingBlockValueEdit = () => finish(true);
+    input.addEventListener('mousedown', (e) => e.stopPropagation());
+    input.addEventListener('input', () => {
+      input.size = Math.max(2, input.value.length);
+    });
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  /** Opens an in-page option menu under a dropdown value, outside the zoomable canvas transform */
+  private startBlockChoiceEdit(el: HTMLElement, block: VisualBlock, param: string): void {
+    this.closeBlockChoiceMenu?.();
+
+    const menu = document.createElement('div');
+    menu.className = 'word-block-choice-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const onOutsideMouseDown = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) close();
+    };
+    // The menu is positioned once, so zooming the canvas closes it
+    const onWheel = (e: WheelEvent) => {
+      if (!menu.contains(e.target as Node)) close();
+    };
+    const close = () => {
+      menu.remove();
+      document.removeEventListener('mousedown', onOutsideMouseDown, true);
+      document.removeEventListener('wheel', onWheel, true);
+      if (this.closeBlockChoiceMenu === close) this.closeBlockChoiceMenu = null;
+    };
+    this.closeBlockChoiceMenu = close;
+
+    for (const choice of getChoices(block, param)) {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'word-block-choice-option';
+      option.setAttribute('role', 'option');
+      option.dataset.value = choice.value;
+      option.textContent = choice.label === choice.value ? choice.value : `${choice.label}  ${choice.value}`;
+      const selected = choice.value === block.params[param];
+      option.classList.toggle('is-selected', selected);
+      option.setAttribute('aria-selected', String(selected));
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        close();
+        this.commitBlockValueEdit(block.id, param, choice.value);
+      });
+      menu.appendChild(option);
+    }
+
+    menu.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      const options = Array.from(menu.querySelectorAll<HTMLButtonElement>('button'));
+      const idx = options.indexOf(document.activeElement as HTMLButtonElement);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close();
+        el.focus();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        options[(idx + 1) % options.length]?.focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        options[(idx - 1 + options.length) % options.length]?.focus();
+      }
+    });
+
+    const anchor = el.getBoundingClientRect();
+    menu.style.left = `${anchor.left}px`;
+    menu.style.top = `${anchor.bottom + 4}px`;
+    document.body.appendChild(menu);
+    const box = menu.getBoundingClientRect();
+    if (box.bottom > window.innerHeight) menu.style.top = `${Math.max(4, anchor.top - box.height - 4)}px`;
+    if (box.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - box.width - 4)}px`;
+
+    document.addEventListener('mousedown', onOutsideMouseDown, true);
+    document.addEventListener('wheel', onWheel, { capture: true, passive: true });
+    (menu.querySelector<HTMLButtonElement>('.is-selected') ?? menu.querySelector<HTMLButtonElement>('button'))?.focus();
+  }
+
+  private findVisualBlock(blocks: VisualBlock[], id: string): VisualBlock | undefined {
+    for (const b of blocks) {
+      if (b.id === id) return b;
+      const nested = this.findVisualBlock(b.children ?? [], id) ?? this.findVisualBlock(b.elseChildren ?? [], id);
+      if (nested) return nested;
+    }
+    return undefined;
+  }
+
+  private deleteVisualBlock(blockId: string): void {
+    this.flushBlockEditors();
+    if (!this.canEditActiveBlocks()) return;
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab.visualBlocks) return;
+    const result = deleteBlock(currentTab.visualBlocks, currentTab.code, blockId);
+    if (!result.ok) {
+      this.logConsole?.(`⚠️ ${result.error}`);
+      return;
+    }
+    this.setBlocksTabCode(currentTab, result.code);
+    this.renderVisualBlocks();
+    this.renderPopoutVisualBlocks();
+    this.triggerAutosave();
+  }
+
+  /** Updates a blocks tab's code after a block-driven change (not a manual Python edit) */
+  private setBlocksTabCode(tab: ScriptTab, code: string): void {
+    tab.code = code;
+    tab._blocksBaselineCode = code;
+    if (this.codeTextarea) this.codeTextarea.value = code;
+    if (this.popoutTextarea) this.popoutTextarea.value = code;
+  }
+
+  private commitBlockValueEdit(blockId: string, param: string, raw: string): void {
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab?.visualBlocks) return;
+    const result = applyBlockValueEdit(currentTab.visualBlocks, currentTab.code, blockId, param, raw);
+    if (!result.ok) {
+      this.logConsole?.(`⚠️ ${result.error}`);
+    } else if (result.code !== currentTab.code) {
+      this.setBlocksTabCode(currentTab, result.code);
+      this.triggerAutosave();
+      const block = this.findVisualBlock(currentTab.visualBlocks, blockId);
+      this.logConsole?.(`✏️ Updated block value ${param} = ${block ? getDisplayValue(block, param) : raw.trim()}`);
+    }
+    this.renderVisualBlocks();
+    this.renderPopoutVisualBlocks();
+  }
+
   public formatBlockLabel(label: string): string {
+    // Labels come from imported files, so every text segment is escaped
+    const pills = (text: string) =>
+      text
+        .split(/\[([^\]]+)\]/)
+        .map((part, i) => (i % 2 ? `<span class="word-block-pill">${escapeHtml(part)}</span>` : escapeHtml(part)))
+        .join('');
     const clean = label.replace(/<\/?span[^>]*>/gi, '');
     return clean
-      .replace(/\[([^\]]+)\]/g, '___PARAM___$1___ENDPARAM___')
-      .replace(/<([^>]+)>/g, '<span class="word-block-pill pill-condition">&lt;$1&gt;</span>')
-      .replace(/___PARAM___(.*?)___ENDPARAM___/g, '<span class="word-block-pill">$1</span>');
+      .split(/<([^>]+)>/)
+      .map((part, i) => (i % 2 ? `<span class="word-block-pill pill-condition">&lt;${pills(part)}&gt;</span>` : pills(part)))
+      .join('');
   }
 
   public async handleSpikeScratchFile(file: File): Promise<void> {
@@ -6926,6 +7332,7 @@ print("Finished!")
 
   public renderPopoutVisualBlocks(): void {
     if (!this.popoutBlocksContainer) return;
+    this.flushBlockEditors();
     const currentTab = this.scriptTabs[this.activeTabIndex];
     if (!currentTab || !currentTab.visualBlocks || currentTab.visualBlocks.length === 0) {
       this.popoutBlocksContainer.innerHTML = `
@@ -6958,30 +7365,14 @@ print("Finished!")
     this.popoutBlocksContainer.innerHTML = `
       <div class="word-blocks-stack">
         <div class="word-blocks-stack-header">
-          <span class="stack-title">🧩 ${currentTab.title}</span>
+          <span class="stack-title">🧩 ${escapeHtml(currentTab.title)}</span>
           <span class="stack-count">${currentTab.visualBlocks.length} blocks</span>
         </div>
         ${blocksHtml}
       </div>
     `;
 
-    // Wire block delete buttons in canvas
-    const delBtns = this.popoutBlocksContainer.querySelectorAll('.btn-delete-block');
-    delBtns.forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = btn.getAttribute('data-delete-block-id');
-        if (id && currentTab.visualBlocks) {
-          const idx = currentTab.visualBlocks.findIndex((b) => b.id === id);
-          if (idx !== -1) {
-            currentTab.visualBlocks.splice(idx, 1);
-            this.renderVisualBlocks();
-            this.renderPopoutVisualBlocks();
-            this.triggerAutosave();
-          }
-        }
-      });
-    });
+    this.wireBlockEditors(this.popoutBlocksContainer);
 
     this.updatePopoutScratchTransform();
   }
@@ -7217,7 +7608,7 @@ print("Finished!")
           });
           // Ensure first tab has visualBlocks if missing
           if (!this.scriptTabs[0].visualBlocks && SAMPLE_MISSIONS.drive_straight.visualBlocks) {
-            this.scriptTabs[0].visualBlocks = SAMPLE_MISSIONS.drive_straight.visualBlocks;
+            this.scriptTabs[0].visualBlocks = JSON.parse(JSON.stringify(SAMPLE_MISSIONS.drive_straight.visualBlocks));
           }
           this.activeTabIndex = 0;
         }
