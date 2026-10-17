@@ -11,6 +11,7 @@ import { SpikeScratchImporter, VisualBlock } from '../runtime/spike-scratch-impo
 import { applyBlockValueEdit, buildEditableLabel, deleteBlock, getChoices, getDisplayValue, getParamKind } from './word-block-values';
 import JSZip from 'jszip';
 import { DISPLAY_VERSION } from '../config/version';
+import { MISSION_TEMPLATES } from './mission-templates';
 
 /** Escapes text for HTML content and double-quoted attributes */
 function escapeHtml(text: string): string {
@@ -448,6 +449,7 @@ print("Robot perfectly squared to line!")
       },
     ],
   },
+  ...MISSION_TEMPLATES,
 };
 
 export interface SpikePaletteItem {
@@ -1117,6 +1119,9 @@ export class SimulatorHud {
               <option value="gyro_turn">Mission 2: Gyro 90° Turn</option>
               <option value="line_follower">Mission 3: Proportional Line Follower</option>
               <option value="line_squaring">Mission 4: Dual-Sensor Line Squaring</option>
+              <optgroup label="🧭 Gyro Control Templates">
+                ${Object.entries(MISSION_TEMPLATES).map(([key, tpl]) => `<option value="${key}">${escapeHtml(tpl.title)}</option>`).join('')}
+              </optgroup>
             </select>
             <button class="btn btn-xs btn-secondary" id="btn-import-code" title="Import Code or ZIP (.py, .llsp, .llsp3, .sb3, .json, .zip)">
               📥 Import Code
@@ -5674,12 +5679,20 @@ ${snap.recommendations.map((r) => `- ${r}`).join('\n')}
     // 2. Sample Season Missions
     html += `<optgroup label="🎯 Sample Missions">`;
     Object.entries(SAMPLE_MISSIONS).forEach(([key, sample]) => {
+      if (key in MISSION_TEMPLATES) return;
       const safeTitle = (sample.title || '')
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
       html += `<option value="sample_${key}">${safeTitle}</option>`;
+    });
+    html += `</optgroup>`;
+
+    // 3. Gyro control templates
+    html += `<optgroup label="🧭 Gyro Control Templates">`;
+    Object.entries(MISSION_TEMPLATES).forEach(([key, tpl]) => {
+      html += `<option value="sample_${key}">${escapeHtml(tpl.title)}</option>`;
     });
     html += `</optgroup>`;
 

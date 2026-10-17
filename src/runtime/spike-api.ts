@@ -107,6 +107,9 @@ export class VirtualSpikeApi {
       get_degrees_counted: () => {
         return Math.round(motor?.degrees || 0);
       },
+      set_degrees_counted: (degrees: number = 0) => {
+        if (motor) motor.degrees = degrees;
+      },
       get_position: () => {
         return Math.round(motor?.degrees || 0);
       },

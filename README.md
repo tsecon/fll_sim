@@ -27,6 +27,7 @@ Unlike 2D grid visualizers or discontinued proprietary desktop simulators, `fll-
   2. *Mission 2: Gyro 90° Turn*
   3. *Mission 3: Proportional Line Follower (P-Controller)*
   4. *Mission 4: Dual-Sensor Line Squaring*
+* **🧭 Gyro Control Templates** (from the 2026 FLL Advanced Coding Camp by FRC 9023): *Basic Gyro Turn*, *P Control Gyro Turn*, *P Control Gyro Straight*, and *PID Control Gyro Straight*, each editable from Word Blocks (Target Angle, Speed, Degrees, $K_p$/$K_i$/$K_d$).
 
 ---
 

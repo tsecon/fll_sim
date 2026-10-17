@@ -166,3 +166,18 @@ for i in range(100):
 motors.stop()
 print("Robot perfectly squared to line!")
 ```
+
+---
+
+## 6. Gyro Control Templates
+
+The **📜 Mission** dropdown also includes a **🧭 Gyro Control Templates** group with the four control examples from the *2026 FLL Advanced Coding Camp by FRC 9023*. In each template, the My Block inputs (Target Angle, Speed, Degrees) and gains are variables at the top of the program. You can edit them in Word Blocks, and the Python code updates to match.
+
+| Template | Algorithm | Inputs |
+| :--- | :--- | :--- |
+| **Basic Gyro Turn** | Constant-speed tank turn that stops at `target_angle - overshoot` | `target_angle`, `overshoot`, `turn_speed` |
+| **P Control Gyro Turn** | `speed = kp * error`, min-speed clamp, stops when `abs(error) <= tolerance` (works for left and right) | `target_angle`, `kp`, `min_speed`, `tolerance` |
+| **P Control Gyro Straight** | Holds heading 0 with `steering = error * kp` until the average wheel degrees reach the target | `speed`, `degrees`, `kp` |
+| **PID Control Gyro Straight** | `steering = error*kp + integral*ki + derivative*kd`, with an integral windup cap | `speed`, `degrees`, `kp`, `ki`, `kd`, `integral_cap` |
+
+The straight-drive templates reset the wheel encoders with `Motor.set_degrees_counted(0)` and measure distance as `(abs(motor_a.get_degrees_counted()) + abs(motor_b.get_degrees_counted())) / 2`.

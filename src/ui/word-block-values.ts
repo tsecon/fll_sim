@@ -181,6 +181,17 @@ define(['control_if_else'], {
   label: (p) => `If <${p.condition}> then ... else`,
   python: (p) => (p.conditionPy ? `if ${p.conditionPy}:` : null),
 });
+define(['control_repeat_until'], {
+  label: (p) => `Repeat until <${p.condition}>`,
+  python: (p) => (p.conditionPy ? `while not (${p.conditionPy}):` : null),
+});
+define(['flippermoremotor_motorSetDegreeCounted'], {
+  values: ['value'],
+  choices: { port: PORTS },
+  motorPorts: ['port'],
+  label: (_p, m) => `Set relative position of [Port ${m('port')}] to [${m('value')}]`,
+  python: (p) => `motor_${lower(p.port)}.set_degrees_counted(${p.value})`,
+});
 define(['data_setvariableto'], {
   values: ['value'],
   label: (p, m) => `Set [${p.variable}] to [${m('value')}]`,
