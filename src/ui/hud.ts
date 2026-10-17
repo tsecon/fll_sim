@@ -8,9 +8,14 @@ import { SeasonMissionSpec } from '../missions/season-config';
 import { legoAssetManager, LegoRenderMode } from '../cad/lego-asset-manager';
 import { profiler } from '../core/performance-profiler';
 import { SpikeScratchImporter, VisualBlock } from '../runtime/spike-scratch-importer';
-import { applyBlockValueEdit, buildEditableLabel } from './word-block-values';
+import { applyBlockValueEdit, buildEditableLabel, deleteBlock, getChoices, getDisplayValue, getParamKind } from './word-block-values';
 import JSZip from 'jszip';
 import { DISPLAY_VERSION } from '../config/version';
+
+/** Escapes text for HTML content and double-quoted attributes */
+function escapeHtml(text: string): string {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 export type ScriptKind = 'python' | 'blocks';
 
@@ -977,6 +982,10 @@ export class SimulatorHud {
   // Word Blocks vs Python mode
   private editorViewMode: 'blocks' | 'python' = 'blocks';
   private wordBlocksContainer!: HTMLElement;
+  /** Commits the open Word Block value input, if any */
+  private pendingBlockValueEdit: (() => void) | null = null;
+  /** Closes the open Word Block option menu, if any */
+  private closeBlockChoiceMenu: (() => void) | null = null;
   private btnViewModeBlocks!: HTMLButtonElement;
   private btnViewModePython!: HTMLButtonElement;
   private spikeScratchFileInput!: HTMLInputElement;
@@ -987,7 +996,7 @@ export class SimulatorHud {
       title: 'Mission 1',
       code: SAMPLE_MISSIONS.drive_straight.code,
       kind: 'blocks',
-      visualBlocks: SAMPLE_MISSIONS.drive_straight.visualBlocks,
+      visualBlocks: JSON.parse(JSON.stringify(SAMPLE_MISSIONS.drive_straight.visualBlocks)),
       readOnlyBlocks: false,
       _blocksBaselineCode: SAMPLE_MISSIONS.drive_straight.code,
     },
@@ -5822,7 +5831,8 @@ ${snap.recommendations.map((r) => `- ${r}`).join('\n')}
       title,
       code,
       kind,
-      visualBlocks,
+      // Copy so editing a tab never mutates shared sample/import blocks
+      visualBlocks: visualBlocks ? JSON.parse(JSON.stringify(visualBlocks)) : undefined,
       readOnlyBlocks: false,
       _blocksBaselineCode: kind === 'blocks' ? code : undefined,
     });
@@ -6241,6 +6251,7 @@ print("Finished!")
 
   public renderVisualBlocks(): void {
     if (!this.wordBlocksContainer) return;
+    this.flushBlockEditors();
     const currentTab = this.scriptTabs[this.activeTabIndex];
     if (!currentTab || !currentTab.visualBlocks || currentTab.visualBlocks.length === 0) {
       this.wordBlocksContainer.innerHTML = `
@@ -6274,32 +6285,14 @@ print("Finished!")
     this.wordBlocksContainer.innerHTML = `
       <div class="word-blocks-stack">
         <div class="word-blocks-stack-header">
-          <span class="stack-title">🧩 ${currentTab.title}</span>
+          <span class="stack-title">🧩 ${escapeHtml(currentTab.title)}</span>
           <span class="stack-count">${currentTab.visualBlocks.length} blocks</span>
         </div>
         ${blocksHtml}
       </div>
     `;
 
-    // Wire block delete buttons in canvas
-    const delBtns = this.wordBlocksContainer.querySelectorAll('.btn-delete-block');
-    delBtns.forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = btn.getAttribute('data-delete-block-id');
-        if (id && currentTab.visualBlocks) {
-          const idx = currentTab.visualBlocks.findIndex((b) => b.id === id);
-          if (idx !== -1) {
-            currentTab.visualBlocks.splice(idx, 1);
-            this.renderVisualBlocks();
-            this.renderPopoutVisualBlocks();
-            this.triggerAutosave();
-          }
-        }
-      });
-    });
-
-    this.wireBlockValueEditors(this.wordBlocksContainer);
+    this.wireBlockEditors(this.wordBlocksContainer);
 
     this.updateScratchTransform();
     if (this.isPopoutCodeEditorOpen) {
@@ -6308,7 +6301,7 @@ print("Finished!")
   }
 
   private renderVisualBlockHtml(b: VisualBlock): string {
-    const isHat = b.category === 'event' || b.opcode.includes('when') || b.opcode.includes('start');
+    const isHat = b.category === 'event';
     const isControlWithChildren = b.category === 'control' && (Boolean(b.children) || Boolean(b.elseChildren));
 
     const formattedLabel = this.formatEditableBlockLabel(b);
@@ -6346,11 +6339,11 @@ print("Finished!")
     }
 
     return `
-      <div class="word-block ${isHat ? 'word-block-hat' : ''}" style="--block-color: ${b.colorHex};" data-block-id="${b.id}">
+      <div class="word-block ${isHat ? 'word-block-hat' : ''}" style="--block-color: ${b.colorHex};" data-block-id="${escapeHtml(b.id)}">
         <div class="word-block-body">
           <span class="word-block-icon">${b.icon}</span>
           <span class="word-block-label">${formattedLabel}</span>
-          ${isHat ? '' : `<button class="btn-delete-block" data-delete-block-id="${b.id}" title="Delete Block">✕</button>`}
+          ${isHat ? '' : `<button class="btn-delete-block" data-delete-block-id="${escapeHtml(b.id)}" title="Delete Block">✕</button>`}
         </div>
       </div>
     `;
@@ -6360,18 +6353,36 @@ print("Finished!")
   private formatEditableBlockLabel(b: VisualBlock): string {
     const marked = buildEditableLabel(b, '\u0001', '\u0002');
     if (marked === null) return this.formatBlockLabel(b.label);
-    const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
     return this.formatBlockLabel(marked).replace(
       /\(\u0001(\w+)\u0002\)|\u0001(\w+)\u0002/g,
       (_m, standalone: string | undefined, inPill: string | undefined) => {
         const param = (standalone || inPill)!;
-        const cls = standalone ? 'word-block-pill word-block-value' : 'word-block-value';
-        return `<span class="${cls}" data-block-id="${esc(b.id)}" data-param="${param}" tabindex="0" title="Click to edit">${esc(b.params[param])}</span>`;
+        const kind = getParamKind(b, param);
+        const cls = `${standalone ? 'word-block-pill ' : ''}word-block-value word-block-value-${kind}`;
+        const title = kind === 'choice' ? 'Click to choose' : 'Click to edit';
+        return `<span class="${cls}" data-block-id="${escapeHtml(b.id)}" data-param="${param}" tabindex="0" title="${title}">${escapeHtml(getDisplayValue(b, param))}</span>`;
       }
     );
   }
 
-  private wireBlockValueEditors(container: HTMLElement): void {
+  /** Commits an open value input and closes an open option menu (before re-rendering blocks) */
+  private flushBlockEditors(): void {
+    const pending = this.pendingBlockValueEdit;
+    this.pendingBlockValueEdit = null;
+    pending?.();
+    this.closeBlockChoiceMenu?.();
+  }
+
+  private wireBlockEditors(container: HTMLElement): void {
+    container.querySelectorAll<HTMLElement>('.btn-delete-block').forEach((btn) => {
+      // Keep focus in an open value input so its blur re-render can't swallow this click
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-delete-block-id');
+        if (id) this.deleteVisualBlock(id);
+      });
+    });
     container.querySelectorAll<HTMLElement>('.word-block-value').forEach((el) => {
       el.addEventListener('mousedown', (e) => e.stopPropagation());
       el.addEventListener('click', (e) => {
@@ -6387,15 +6398,31 @@ print("Finished!")
     });
   }
 
-  private startBlockValueEdit(el: HTMLElement): void {
+  /** Whether blocks of the active tab may change; logs why not */
+  private canEditActiveBlocks(): boolean {
     const currentTab = this.scriptTabs[this.activeTabIndex];
-    if (!currentTab?.visualBlocks) return;
+    if (!currentTab?.visualBlocks || currentTab.kind !== 'blocks') {
+      this.logConsole?.('⚠️ Word Blocks can only be edited in a Word Blocks script.');
+      return false;
+    }
     if (currentTab.readOnlyBlocks) {
       this.logConsole?.('⚠️ Word Blocks are read-only because Python code was edited.');
-      return;
+      return false;
     }
+    return true;
+  }
+
+  private startBlockValueEdit(el: HTMLElement): void {
+    if (!this.canEditActiveBlocks()) return;
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab.visualBlocks) return;
     const blockId = el.dataset.blockId || '';
     const param = el.dataset.param || '';
+    const block = this.findVisualBlock(currentTab.visualBlocks, blockId);
+    if (block && getParamKind(block, param) === 'choice') {
+      this.startBlockChoiceEdit(el, block, param);
+      return;
+    }
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -6411,6 +6438,7 @@ print("Finished!")
     const finish = (commit: boolean) => {
       if (finished) return;
       finished = true;
+      this.pendingBlockValueEdit = null;
       if (commit) {
         this.commitBlockValueEdit(blockId, param, input.value);
       } else {
@@ -6418,6 +6446,7 @@ print("Finished!")
         this.renderPopoutVisualBlocks();
       }
     };
+    this.pendingBlockValueEdit = () => finish(true);
     input.addEventListener('mousedown', (e) => e.stopPropagation());
     input.addEventListener('input', () => {
       input.size = Math.max(2, input.value.length);
@@ -6430,6 +6459,110 @@ print("Finished!")
     input.addEventListener('blur', () => finish(true));
   }
 
+  /** Opens an in-page option menu under a dropdown value, outside the zoomable canvas transform */
+  private startBlockChoiceEdit(el: HTMLElement, block: VisualBlock, param: string): void {
+    this.closeBlockChoiceMenu?.();
+
+    const menu = document.createElement('div');
+    menu.className = 'word-block-choice-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const onOutsideMouseDown = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) close();
+    };
+    // The menu is positioned once, so zooming the canvas closes it
+    const onWheel = (e: WheelEvent) => {
+      if (!menu.contains(e.target as Node)) close();
+    };
+    const close = () => {
+      menu.remove();
+      document.removeEventListener('mousedown', onOutsideMouseDown, true);
+      document.removeEventListener('wheel', onWheel, true);
+      if (this.closeBlockChoiceMenu === close) this.closeBlockChoiceMenu = null;
+    };
+    this.closeBlockChoiceMenu = close;
+
+    for (const choice of getChoices(block, param)) {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'word-block-choice-option';
+      option.setAttribute('role', 'option');
+      option.dataset.value = choice.value;
+      option.textContent = choice.label === choice.value ? choice.value : `${choice.label}  ${choice.value}`;
+      const selected = choice.value === block.params[param];
+      option.classList.toggle('is-selected', selected);
+      option.setAttribute('aria-selected', String(selected));
+      option.addEventListener('click', (e) => {
+        e.stopPropagation();
+        close();
+        this.commitBlockValueEdit(block.id, param, choice.value);
+      });
+      menu.appendChild(option);
+    }
+
+    menu.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      const options = Array.from(menu.querySelectorAll<HTMLButtonElement>('button'));
+      const idx = options.indexOf(document.activeElement as HTMLButtonElement);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        close();
+        el.focus();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        options[(idx + 1) % options.length]?.focus();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        options[(idx - 1 + options.length) % options.length]?.focus();
+      }
+    });
+
+    const anchor = el.getBoundingClientRect();
+    menu.style.left = `${anchor.left}px`;
+    menu.style.top = `${anchor.bottom + 4}px`;
+    document.body.appendChild(menu);
+    const box = menu.getBoundingClientRect();
+    if (box.bottom > window.innerHeight) menu.style.top = `${Math.max(4, anchor.top - box.height - 4)}px`;
+    if (box.right > window.innerWidth) menu.style.left = `${Math.max(4, window.innerWidth - box.width - 4)}px`;
+
+    document.addEventListener('mousedown', onOutsideMouseDown, true);
+    document.addEventListener('wheel', onWheel, { capture: true, passive: true });
+    (menu.querySelector<HTMLButtonElement>('.is-selected') ?? menu.querySelector<HTMLButtonElement>('button'))?.focus();
+  }
+
+  private findVisualBlock(blocks: VisualBlock[], id: string): VisualBlock | undefined {
+    for (const b of blocks) {
+      if (b.id === id) return b;
+      const nested = this.findVisualBlock(b.children ?? [], id) ?? this.findVisualBlock(b.elseChildren ?? [], id);
+      if (nested) return nested;
+    }
+    return undefined;
+  }
+
+  private deleteVisualBlock(blockId: string): void {
+    this.flushBlockEditors();
+    if (!this.canEditActiveBlocks()) return;
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab.visualBlocks) return;
+    const result = deleteBlock(currentTab.visualBlocks, currentTab.code, blockId);
+    if (!result.ok) {
+      this.logConsole?.(`⚠️ ${result.error}`);
+      return;
+    }
+    this.setBlocksTabCode(currentTab, result.code);
+    this.renderVisualBlocks();
+    this.renderPopoutVisualBlocks();
+    this.triggerAutosave();
+  }
+
+  /** Updates a blocks tab's code after a block-driven change (not a manual Python edit) */
+  private setBlocksTabCode(tab: ScriptTab, code: string): void {
+    tab.code = code;
+    tab._blocksBaselineCode = code;
+    if (this.codeTextarea) this.codeTextarea.value = code;
+    if (this.popoutTextarea) this.popoutTextarea.value = code;
+  }
+
   private commitBlockValueEdit(blockId: string, param: string, raw: string): void {
     const currentTab = this.scriptTabs[this.activeTabIndex];
     if (!currentTab?.visualBlocks) return;
@@ -6437,23 +6570,27 @@ print("Finished!")
     if (!result.ok) {
       this.logConsole?.(`⚠️ ${result.error}`);
     } else if (result.code !== currentTab.code) {
-      currentTab.code = result.code;
-      currentTab._blocksBaselineCode = result.code;
-      if (this.codeTextarea) this.codeTextarea.value = currentTab.code;
-      if (this.popoutTextarea) this.popoutTextarea.value = currentTab.code;
+      this.setBlocksTabCode(currentTab, result.code);
       this.triggerAutosave();
-      this.logConsole?.(`✏️ Updated block value ${param} = ${raw.trim()}`);
+      const block = this.findVisualBlock(currentTab.visualBlocks, blockId);
+      this.logConsole?.(`✏️ Updated block value ${param} = ${block ? getDisplayValue(block, param) : raw.trim()}`);
     }
     this.renderVisualBlocks();
     this.renderPopoutVisualBlocks();
   }
 
   public formatBlockLabel(label: string): string {
+    // Labels come from imported files, so every text segment is escaped
+    const pills = (text: string) =>
+      text
+        .split(/\[([^\]]+)\]/)
+        .map((part, i) => (i % 2 ? `<span class="word-block-pill">${escapeHtml(part)}</span>` : escapeHtml(part)))
+        .join('');
     const clean = label.replace(/<\/?span[^>]*>/gi, '');
     return clean
-      .replace(/\[([^\]]+)\]/g, '___PARAM___$1___ENDPARAM___')
-      .replace(/<([^>]+)>/g, '<span class="word-block-pill pill-condition">&lt;$1&gt;</span>')
-      .replace(/___PARAM___(.*?)___ENDPARAM___/g, '<span class="word-block-pill">$1</span>');
+      .split(/<([^>]+)>/)
+      .map((part, i) => (i % 2 ? `<span class="word-block-pill pill-condition">&lt;${pills(part)}&gt;</span>` : pills(part)))
+      .join('');
   }
 
   public async handleSpikeScratchFile(file: File): Promise<void> {
@@ -7021,6 +7158,7 @@ print("Finished!")
 
   public renderPopoutVisualBlocks(): void {
     if (!this.popoutBlocksContainer) return;
+    this.flushBlockEditors();
     const currentTab = this.scriptTabs[this.activeTabIndex];
     if (!currentTab || !currentTab.visualBlocks || currentTab.visualBlocks.length === 0) {
       this.popoutBlocksContainer.innerHTML = `
@@ -7053,32 +7191,14 @@ print("Finished!")
     this.popoutBlocksContainer.innerHTML = `
       <div class="word-blocks-stack">
         <div class="word-blocks-stack-header">
-          <span class="stack-title">🧩 ${currentTab.title}</span>
+          <span class="stack-title">🧩 ${escapeHtml(currentTab.title)}</span>
           <span class="stack-count">${currentTab.visualBlocks.length} blocks</span>
         </div>
         ${blocksHtml}
       </div>
     `;
 
-    // Wire block delete buttons in canvas
-    const delBtns = this.popoutBlocksContainer.querySelectorAll('.btn-delete-block');
-    delBtns.forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const id = btn.getAttribute('data-delete-block-id');
-        if (id && currentTab.visualBlocks) {
-          const idx = currentTab.visualBlocks.findIndex((b) => b.id === id);
-          if (idx !== -1) {
-            currentTab.visualBlocks.splice(idx, 1);
-            this.renderVisualBlocks();
-            this.renderPopoutVisualBlocks();
-            this.triggerAutosave();
-          }
-        }
-      });
-    });
-
-    this.wireBlockValueEditors(this.popoutBlocksContainer);
+    this.wireBlockEditors(this.popoutBlocksContainer);
 
     this.updatePopoutScratchTransform();
   }
@@ -7314,7 +7434,7 @@ print("Finished!")
           });
           // Ensure first tab has visualBlocks if missing
           if (!this.scriptTabs[0].visualBlocks && SAMPLE_MISSIONS.drive_straight.visualBlocks) {
-            this.scriptTabs[0].visualBlocks = SAMPLE_MISSIONS.drive_straight.visualBlocks;
+            this.scriptTabs[0].visualBlocks = JSON.parse(JSON.stringify(SAMPLE_MISSIONS.drive_straight.visualBlocks));
           }
           this.activeTabIndex = 0;
         }

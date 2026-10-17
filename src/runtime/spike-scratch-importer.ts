@@ -478,7 +478,7 @@ export class SpikeScratchImporter {
         category: 'control',
         icon: '⏳',
         label: `Wait until <${cond.label}>`,
-        params: { condition: cond.label },
+        params: { condition: cond.label, conditionPy: cond.pyExpr },
         colorHex: '#f97316',
       };
     } else if (op === 'control_repeat') {
@@ -518,7 +518,7 @@ export class SpikeScratchImporter {
         category: 'control',
         icon: '❓',
         label: `If <${cond.label}> then`,
-        params: { condition: cond.label },
+        params: { condition: cond.label, conditionPy: cond.pyExpr },
         colorHex: '#f97316',
         children,
       };
@@ -534,7 +534,7 @@ export class SpikeScratchImporter {
         category: 'control',
         icon: '❓',
         label: `If <${cond.label}> then ... else`,
-        params: { condition: cond.label },
+        params: { condition: cond.label, conditionPy: cond.pyExpr },
         colorHex: '#f97316',
         children,
         elseChildren,
@@ -575,7 +575,7 @@ export class SpikeScratchImporter {
         category: 'control',
         icon: '🧩',
         label: `${op.replace(/^[a-z]+_/, '')}`,
-        params: {},
+        params: { noPython: 'true' },
         colorHex: '#64748b',
       };
     }
