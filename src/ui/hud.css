@@ -721,6 +721,32 @@ body, html {
   border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
+/* Editable numeric values inside blocks */
+.word-block-value {
+  cursor: text;
+  border-bottom: 1px dashed currentColor;
+}
+
+.word-block-value:hover,
+.word-block-value:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+.word-block-value-input {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+  background: #ffffff;
+  border: 2px solid #2563eb;
+  border-radius: 12px;
+  padding: 0 6px;
+  margin: 0 2px;
+  text-align: center;
+}
+
 /* Control C-Clamps (Loops, If/Else) */
 .word-block-control-clamp {
   background: transparent;

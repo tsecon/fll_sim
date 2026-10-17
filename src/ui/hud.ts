@@ -8,6 +8,7 @@ import { SeasonMissionSpec } from '../missions/season-config';
 import { legoAssetManager, LegoRenderMode } from '../cad/lego-asset-manager';
 import { profiler } from '../core/performance-profiler';
 import { SpikeScratchImporter, VisualBlock } from '../runtime/spike-scratch-importer';
+import { applyBlockValueEdit, buildEditableLabel } from './word-block-values';
 import JSZip from 'jszip';
 import { DISPLAY_VERSION } from '../config/version';
 
@@ -6298,6 +6299,8 @@ print("Finished!")
       });
     });
 
+    this.wireBlockValueEditors(this.wordBlocksContainer);
+
     this.updateScratchTransform();
     if (this.isPopoutCodeEditorOpen) {
       this.renderPopoutVisualBlocks();
@@ -6308,7 +6311,7 @@ print("Finished!")
     const isHat = b.category === 'event' || b.opcode.includes('when') || b.opcode.includes('start');
     const isControlWithChildren = b.category === 'control' && (Boolean(b.children) || Boolean(b.elseChildren));
 
-    const formattedLabel = this.formatBlockLabel(b.label);
+    const formattedLabel = this.formatEditableBlockLabel(b);
 
     if (isControlWithChildren) {
       const childrenHtml = b.children && b.children.length > 0
@@ -6351,6 +6354,98 @@ print("Finished!")
         </div>
       </div>
     `;
+  }
+
+  /** Like formatBlockLabel, but numeric values the user can edit become clickable */
+  private formatEditableBlockLabel(b: VisualBlock): string {
+    const marked = buildEditableLabel(b, '\u0001', '\u0002');
+    if (marked === null) return this.formatBlockLabel(b.label);
+    const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+    return this.formatBlockLabel(marked).replace(
+      /\(\u0001(\w+)\u0002\)|\u0001(\w+)\u0002/g,
+      (_m, standalone: string | undefined, inPill: string | undefined) => {
+        const param = (standalone || inPill)!;
+        const cls = standalone ? 'word-block-pill word-block-value' : 'word-block-value';
+        return `<span class="${cls}" data-block-id="${esc(b.id)}" data-param="${param}" tabindex="0" title="Click to edit">${esc(b.params[param])}</span>`;
+      }
+    );
+  }
+
+  private wireBlockValueEditors(container: HTMLElement): void {
+    container.querySelectorAll<HTMLElement>('.word-block-value').forEach((el) => {
+      el.addEventListener('mousedown', (e) => e.stopPropagation());
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.startBlockValueEdit(el);
+      });
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.startBlockValueEdit(el);
+        }
+      });
+    });
+  }
+
+  private startBlockValueEdit(el: HTMLElement): void {
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab?.visualBlocks) return;
+    if (currentTab.readOnlyBlocks) {
+      this.logConsole?.('⚠️ Word Blocks are read-only because Python code was edited.');
+      return;
+    }
+    const blockId = el.dataset.blockId || '';
+    const param = el.dataset.param || '';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.className = 'word-block-value-input';
+    input.value = el.textContent || '';
+    input.size = Math.max(2, input.value.length);
+    el.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = (commit: boolean) => {
+      if (finished) return;
+      finished = true;
+      if (commit) {
+        this.commitBlockValueEdit(blockId, param, input.value);
+      } else {
+        this.renderVisualBlocks();
+        this.renderPopoutVisualBlocks();
+      }
+    };
+    input.addEventListener('mousedown', (e) => e.stopPropagation());
+    input.addEventListener('input', () => {
+      input.size = Math.max(2, input.value.length);
+    });
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(true);
+      if (e.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  private commitBlockValueEdit(blockId: string, param: string, raw: string): void {
+    const currentTab = this.scriptTabs[this.activeTabIndex];
+    if (!currentTab?.visualBlocks) return;
+    const result = applyBlockValueEdit(currentTab.visualBlocks, currentTab.code, blockId, param, raw);
+    if (!result.ok) {
+      this.logConsole?.(`⚠️ ${result.error}`);
+    } else if (result.code !== currentTab.code) {
+      currentTab.code = result.code;
+      currentTab._blocksBaselineCode = result.code;
+      if (this.codeTextarea) this.codeTextarea.value = currentTab.code;
+      if (this.popoutTextarea) this.popoutTextarea.value = currentTab.code;
+      this.triggerAutosave();
+      this.logConsole?.(`✏️ Updated block value ${param} = ${raw.trim()}`);
+    }
+    this.renderVisualBlocks();
+    this.renderPopoutVisualBlocks();
   }
 
   public formatBlockLabel(label: string): string {
@@ -6982,6 +7077,8 @@ print("Finished!")
         }
       });
     });
+
+    this.wireBlockValueEditors(this.popoutBlocksContainer);
 
     this.updatePopoutScratchTransform();
   }
